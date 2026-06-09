@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<meta name="theme-color" content="#0b1120"/>
+<meta name="theme-color" content="#f0f4f8" id="metaTheme"/>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <title>SeedBase RFID</title>
@@ -58,10 +58,12 @@ window.addEventListener('DOMContentLoaded', () => {
   carregarCfgForm();
   // Aplica preferências visuais imediatamente (não depende do Firebase)
   const tema = localStorage.getItem('tema');
-  if (tema === 'claro') {
-    document.body.classList.add('tema-claro');
+  if (tema === 'escuro') {
+    document.body.classList.add('tema-escuro');
     const btn = document.getElementById('btnTema');
     if (btn) btn.textContent = '☀️';
+    const meta = document.getElementById('metaTheme');
+    if (meta) meta.content = '#080e1c';
   }
   const fi = localStorage.getItem('fonteIdx');
   if (fi !== null) {
@@ -617,20 +619,23 @@ function pararNFC() {
 function alternarTema() {
   const body = document.body;
   const btn = g('btnTema');
-  if (body.classList.contains('tema-claro')) {
-    body.classList.remove('tema-claro');
+  const meta = document.getElementById('metaTheme');
+  if (body.classList.contains('tema-escuro')) {
+    body.classList.remove('tema-escuro');
     btn.textContent = '🌙';
-    localStorage.setItem('tema', 'escuro');
-  } else {
-    body.classList.add('tema-claro');
-    btn.textContent = '☀️';
+    if (meta) meta.content = '#f0f4f8';
     localStorage.setItem('tema', 'claro');
+  } else {
+    body.classList.add('tema-escuro');
+    btn.textContent = '☀️';
+    if (meta) meta.content = '#080e1c';
+    localStorage.setItem('tema', 'escuro');
   }
 }
 
 // ── TAMANHO DA FONTE ──
 const FONTES = [12, 13, 14, 15, 16, 17, 18, 20];
-let fonteIdx = 4; // padrão: 16px
+let fonteIdx = 6; // padrão: 18px
 
 function aumentarFonte() {
   if (fonteIdx < FONTES.length - 1) fonteIdx++;
@@ -680,35 +685,10 @@ function flash(msg,tipo){
 
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{-webkit-text-size-adjust:100%;scroll-behavior:smooth;font-size:16px}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth;font-size:18px}
 
 /* ── TOKENS ── */
 :root{
-  --bg:         #080e1c;
-  --bg2:        #0f1729;
-  --bg3:        #172035;
-  --bg4:        #1e2d47;
-  --borda:      #1e2d47;
-  --borda2:     #2a3f60;
-  --texto:      #e8edf5;
-  --texto2:     #8899b4;
-  --texto3:     #4a607f;
-  --azul:       #4f8ef7;
-  --azul-dim:   rgba(79,142,247,.13);
-  --verde:      #34d399;
-  --verde-dim:  rgba(52,211,153,.13);
-  --amarelo:    #fbbf24;
-  --amarelo-dim:rgba(251,191,36,.13);
-  --vermelho:   #f87171;
-  --verm-dim:   rgba(248,113,113,.13);
-  --r:          14px;
-  --r-sm:       10px;
-  --font-base:  16px;
-  --touch:      52px;
-}
-
-/* ── TEMA CLARO ── */
-body.tema-claro{
   --bg:         #f0f4f8;
   --bg2:        #ffffff;
   --bg3:        #e4ecf5;
@@ -726,6 +706,31 @@ body.tema-claro{
   --amarelo-dim:rgba(180,83,9,.10);
   --vermelho:   #dc2626;
   --verm-dim:   rgba(220,38,38,.10);
+  --r:          14px;
+  --r-sm:       10px;
+  --font-base:  18px;
+  --touch:      52px;
+}
+
+/* ── TEMA ESCURO ── */
+body.tema-escuro{
+  --bg:         #080e1c;
+  --bg2:        #0f1729;
+  --bg3:        #172035;
+  --bg4:        #1e2d47;
+  --borda:      #1e2d47;
+  --borda2:     #2a3f60;
+  --texto:      #e8edf5;
+  --texto2:     #8899b4;
+  --texto3:     #4a607f;
+  --azul:       #4f8ef7;
+  --azul-dim:   rgba(79,142,247,.13);
+  --verde:      #34d399;
+  --verde-dim:  rgba(52,211,153,.13);
+  --amarelo:    #fbbf24;
+  --amarelo-dim:rgba(251,191,36,.13);
+  --vermelho:   #f87171;
+  --verm-dim:   rgba(248,113,113,.13);
 }
 
 /* ── BASE ── */
