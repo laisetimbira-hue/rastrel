@@ -174,9 +174,17 @@ function getCultivarNome(id) {
 function goTab(name) {
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(t=>t.classList.remove('active'));
+  // telas de detalhe não têm nav próprio
+  const navEl = g('nav-'+name);
+  if(navEl) navEl.classList.add('active');
+  // tela de detalhe de lote usa nav de lotes
+  if(name==='lote-detalhe') {
+    const nl = g('nav-lotes');
+    if(nl) nl.classList.add('active');
+  }
   g('screen-'+name).classList.add('active');
-  g('nav-'+name).classList.add('active');
   if(name==='dashboard') carregarDashboard();
+  if(name==='lotes') carregarLotes();
   window.scrollTo(0,0);
 };
 
@@ -209,18 +217,66 @@ function clearField(id) {
 
 async function vincularBag() {
   if(!db){ flash('Configure o Firebase primeiro','err'); return; }
-  const epc=g('epcInput').value.trim();
-  const numero=g('numeroBag').value.trim().toUpperCase();
-  const cultivarId=g('cultivarSelect').value;
-  if(!epc){ flash('Leia a tag RFID primeiro','err'); return; }
-  if(!numero){ flash('Informe o número do bag','err'); return; }
-  if(!cultivarId){ flash('Selecione a cultivar','err'); return; }
-  const op=localStorage.getItem('operador')||'Operador';
-  const dev=localStorage.getItem('dispositivo')||'App';
-  const snap=await getDocs(query(collection(db,'bags'),where('epc','==',epc)));
-  if(!snap.empty){ flash('Tag já vinculada ao bag '+snap.docs[0].data().numero_bag,'warn'); return; }
-  const loc=g('localizacao').value.trim()||'Armazém';
-  const ref=await addDoc(collection(db,'bags'),{
+  const epc    = g('epcInput').value.trim();
+  const numero = g('numeroBag').value.trim().toUpperCase();
+  if(!epc){ flash('Leia a tag NFC primeiro','err'); return; }
+
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Verificar se EPC já usado
+  const snapEpc = await db.collection('bags').where('epc','==',epc).get();
+  if(!snapEpc.empty){
+    flash('Tag já vinculada ao bag '+snapEpc.docs[0].data().numero_bag,'warn');
+    return;
+  }
+
+  // Tentar encontrar bag aguardando tag pelo número gravado na tag
+  // (a tag NFC foi gravada com o número do bag pelo NFC Tools)
+  let bagExistente = null;
+  if(epc && epc.length > 2){
+    // Busca pelo conteúdo gravado na tag (número do bag)
+    const snapNum = await db.collection('bags')
+      .where('numero_bag','==', epc.toUpperCase())
+      .where('status','==','aguardando_tag').get();
+    if(!snapNum.empty) bagExistente = { id: snapNum.docs[0].id, ...snapNum.docs[0].data() };
+  }
+  // Também tenta pelo número digitado manualmente
+  if(!bagExistente && numero){
+    const snapNum2 = await db.collection('bags')
+      .where('numero_bag','==', numero)
+      .where('status','==','aguardando_tag').get();
+    if(!snapNum2.empty) bagExistente = { id: snapNum2.docs[0].id, ...snapNum2.docs[0].data() };
+  }
+
+  if(bagExistente){
+    // ✅ BAG JÁ EXISTE NO LOTE — só vincular a tag
+    await db.collection('bags').doc(bagExistente.id).update({
+      epc,
+      status: 'em_estoque',
+      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    await db.collection('movimentacoes').add({
+      bag_id: bagExistente.id, numero_bag: bagExistente.numero_bag,
+      tipo_evento:'vinculacao',
+      local_destino: bagExistente.localizacao_atual,
+      observacao: `Tag NFC vinculada — EPC ${epc}`,
+      operador:op, dispositivo:dev,
+      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    flash('✓ '+bagExistente.numero_bag+' — tag vinculada!','ok');
+    // Mostrar próximo pendente do mesmo lote
+    mostrarProximoPendente(bagExistente.lote, bagExistente.numero_bag);
+    limparVincular();
+    return;
+  }
+
+  // CADASTRO MANUAL (bag novo, não veio de lote)
+  const cultivarId = g('cultivarSelect').value;
+  if(!numero)     { flash('Informe o número do bag','err'); return; }
+  if(!cultivarId) { flash('Selecione a cultivar','err'); return; }
+  const loc = g('localizacao').value.trim() || 'Armazém';
+  const ref = await db.collection('bags').add({
     epc, numero_bag:numero, cultivar_id:cultivarId,
     cultivar_nome:getCultivarNome(cultivarId),
     categoria:g('categoriaSelect').value,
@@ -229,15 +285,37 @@ async function vincularBag() {
     peso_kg:parseFloat(g('peso').value)||null,
     produtor:g('produtor').value.trim(),
     localizacao_atual:loc, status:'em_estoque',
-    criado_em:serverTimestamp(), atualizado_em:serverTimestamp(),
+    criado_em:firebase.firestore.FieldValue.serverTimestamp(),
+    atualizado_em:firebase.firestore.FieldValue.serverTimestamp(),
   });
-  await addDoc(collection(db,'movimentacoes'),{
+  await db.collection('movimentacoes').add({
     bag_id:ref.id, numero_bag:numero, tipo_evento:'vinculacao',
     local_destino:loc, observacao:`Bag ${numero} vinculado — EPC ${epc}`,
-    operador:op, dispositivo:dev, criado_em:serverTimestamp(),
+    operador:op, dispositivo:dev,
+    criado_em:firebase.firestore.FieldValue.serverTimestamp(),
   });
   flash('Bag '+numero+' vinculado!','ok');
   limparVincular();
+}
+
+async function mostrarProximoPendente(lote, atual) {
+  if(!lote||!db) return;
+  const snap = await db.collection('bags')
+    .where('lote','==',lote)
+    .where('status','==','aguardando_tag').get();
+  if(snap.empty){
+    flash('✅ Lote '+lote+' completo — todos os bags vinculados!','ok');
+    return;
+  }
+  const bags = snap.docs.map(d=>d.data()).sort((a,b)=>a.numero_bag.localeCompare(b.numero_bag));
+  const proximo = bags[0];
+  // Mostrar banner com próximo
+  const info = g('proximoInfo');
+  const infoTxt = g('proximoInfoTxt');
+  if(info && infoTxt){
+    infoTxt.innerHTML = `<strong>Próximo:</strong> ${proximo.numero_bag} — aproxime a tag NFC`;
+    info.style.display='flex';
+  }
 };
 function limparVincular() {
   ['epcInput','numeroBag','peneira','tratamento','peso','localizacao','produtor'].forEach(id=>g(id).value='');
@@ -316,25 +394,108 @@ function renderDivs(){
 async function confirmarExpedicao() {
   if(!pedidoAtivo||!cargaLidos.length){ flash('Nenhum bag lido','err'); return; }
   if(!confirm(`Confirmar expedição de ${cargaLidos.length} bag(s)?`)) return;
-  const op=localStorage.getItem('operador')||'Operador';
-  const dev=localStorage.getItem('dispositivo')||'App';
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Coletar dados dos bags expedidos para desvincular tags depois
+  const bagsExpedidos = [];
+
   for(const b of cargaLidos){
-    const snap=await getDocs(query(collection(db,'bags'),where('epc','==',b.epc)));
+    const snap = await getDocs(query(collection(db,'bags'),where('epc','==',b.epc)));
     if(snap.empty) continue;
-    await updateDoc(snap.docs[0].ref,{status:'expedido',atualizado_em:serverTimestamp()});
+    const bagRef  = snap.docs[0].ref;
+    const bagData = snap.docs[0].data();
+    await updateDoc(bagRef,{status:'expedido',atualizado_em:serverTimestamp()});
     await addDoc(collection(db,'movimentacoes'),{
       bag_id:snap.docs[0].id, numero_bag:b.numero, tipo_evento:'saida_expedicao',
       observacao:`Expedido — pedido ${pedidoAtivo.numero}`,
       operador:op, dispositivo:dev, criado_em:serverTimestamp(),
     });
+    bagsExpedidos.push({
+      id: snap.docs[0].id,
+      numero_bag: b.numero,
+      epc: b.epc,
+      cultivar_nome: bagData.cultivar_nome||'—',
+      lote: bagData.lote||'—',
+    });
   }
+
   await updateDoc(db.collection('pedidos_carga').doc(pedidoAtivo.id),{
-    status:cargaDivs.length>0?'divergencia':'expedido',
-    atualizado_em:serverTimestamp(),
+    status: cargaDivs.length>0?'divergencia':'expedido',
+    atualizado_em: serverTimestamp(),
   });
+
   flash(cargaLidos.length+' bags expedidos!','ok');
   window.cancelarPedido();
+
+  // Mostrar painel de devolução de tags
+  if(bagsExpedidos.length > 0){
+    setTimeout(()=> mostrarPainelDevolucao(bagsExpedidos), 800);
+  }
 };
+
+function mostrarPainelDevolucao(bags) {
+  const painel = g('painelDevolucao');
+  const lista  = g('painelDevolucaoLista');
+  if(!painel || !lista) return;
+
+  lista.innerHTML = bags.map(b=>`
+    <div class="linha-item" id="devol-${b.id}">
+      <div>
+        <span class="item-num">${b.numero_bag}</span>
+        <span class="item-sub mono" style="color:var(--azul);font-size:12px">${b.epc}</span>
+      </div>
+      <button class="btn-devol" onclick="devolverTagRapido('${b.id}','${b.epc}','${b.numero_bag}')">
+        <i class="ti ti-unlink"></i> Liberar tag
+      </button>
+    </div>`).join('');
+
+  painel.style.display = 'block';
+  // Scroll até o painel
+  painel.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+async function devolverTagRapido(bagId, epc, numeroBag) {
+  if(!db) return;
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  await db.collection('bags').doc(bagId).update({
+    epc:           null,
+    epc_anterior:  epc,
+    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  await db.collection('movimentacoes').add({
+    bag_id:        bagId,
+    numero_bag:    numeroBag,
+    tipo_evento:   'devolucao_tag',
+    observacao:    `Tag devolvida — EPC ${epc} liberado para reutilização`,
+    epc_devolvido: epc,
+    operador:      op,
+    dispositivo:   dev,
+    criado_em:     firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  // Marcar como liberada na lista
+  const linha = g('devol-'+bagId);
+  if(linha){
+    linha.innerHTML = `
+      <div>
+        <span class="item-num">${numeroBag}</span>
+        <span class="item-sub mono" style="color:var(--azul);font-size:12px">${epc}</span>
+      </div>
+      <span class="tag tag-verde"><i class="ti ti-check"></i> Liberada</span>`;
+  }
+
+  // Verificar se todas foram liberadas
+  const pendentes = g('painelDevolucao').querySelectorAll('.btn-devol');
+  if(pendentes.length === 0){
+    setTimeout(()=>{
+      g('painelDevolucao').style.display='none';
+      flash('Todas as tags liberadas para reutilização!','ok');
+    }, 1000);
+  }
+}
 function cancelarPedido() {
   pedidoAtivo=null; cargaLidos=[]; cargaDivs=[];
   g('conferenciaPainel').style.display='none';
@@ -530,6 +691,349 @@ async function importarLotesPiloto() {
   flash(total+' bags importados!','ok');
 }
 
+// ── LOTES ──
+let loteAtivo = null;
+
+async function criarLote() {
+  if(!db){ flash('Firebase não conectado','err'); return; }
+  const numero   = g('ltNumero').value.trim().toUpperCase();
+  const cultivar = g('ltCultivar').value;
+  const qtd      = parseInt(g('ltQtd').value);
+  if(!numero)  { flash('Informe o número do lote','err'); return; }
+  if(!cultivar){ flash('Selecione a cultivar','err'); return; }
+  if(!qtd||qtd<1){ flash('Informe a quantidade de bags','err'); return; }
+
+  const op  = localStorage.getItem('operador')    || 'Sistema';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Verificar se lote já existe
+  const existe = await db.collection('bags').where('lote','==',numero).limit(1).get();
+  if(!existe.empty){ flash('Lote '+numero+' já cadastrado','warn'); return; }
+
+  const btn = g('btn-criar-lote') || document.querySelector('[onclick="criarLote()"]');
+  if(btn){ btn.disabled=true; btn.textContent='Criando...'; }
+
+  const cultivarNome = getCultivarNome(cultivar);
+  const categoria    = g('ltCategoria').value;
+  const peneira      = g('ltPeneira').value.trim();
+  const peso         = parseFloat(g('ltPeso').value)||null;
+  const tratamento   = g('ltTratamento').value.trim();
+  const produtor     = g('ltProdutor').value.trim();
+  const localizacao  = g('ltLocalizacao').value.trim() || 'Armazém';
+
+  for(let i=1; i<=qtd; i++){
+    const numeroBag = numero+'-'+String(i).padStart(2,'0');
+    await db.collection('bags').add({
+      epc:            null,           // sem tag ainda
+      numero_bag:     numeroBag,
+      lote:           numero,
+      cultivar_id:    cultivar,
+      cultivar_nome:  cultivarNome,
+      categoria,peneira,peso_kg:peso,
+      tratamento,produtor,
+      localizacao_atual: localizacao,
+      status:         'aguardando_tag',
+      criado_em:      firebase.firestore.FieldValue.serverTimestamp(),
+      atualizado_em:  firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  flash('Lote '+numero+' criado — '+qtd+' bags!','ok');
+  // Limpar form
+  ['ltNumero','ltQtd','ltPeneira','ltPeso','ltTratamento','ltProdutor','ltLocalizacao']
+    .forEach(id=>g(id).value='');
+  g('ltCultivar').value='';
+  if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-clipboard-plus"></i> Criar lote e gerar bags'; }
+  carregarLotes();
+}
+
+async function carregarLotes() {
+  if(!db) return;
+  const el = g('lotesLista');
+  el.innerHTML = '<p class="vazio">Carregando...</p>';
+
+  const snap = await db.collection('bags').orderBy('criado_em','desc').get();
+  const bags  = snap.docs.map(d=>({id:d.id,...d.data()}));
+
+  // Agrupar por lote
+  const lotesMap = {};
+  for(const b of bags){
+    const lote = b.lote || b.numero_bag?.split('-')[0] || '—';
+    if(!lotesMap[lote]) lotesMap[lote] = {
+      numero:lote, cultivar:b.cultivar_nome||'—',
+      categoria:b.categoria||'—', bags:[]
+    };
+    lotesMap[lote].bags.push(b);
+  }
+
+  const lotes = Object.values(lotesMap);
+  if(!lotes.length){ el.innerHTML='<p class="vazio">Nenhum lote cadastrado ainda.</p>'; return; }
+
+  el.innerHTML = lotes.map(lt => {
+    const total    = lt.bags.length;
+    const comTag   = lt.bags.filter(b=>b.epc && !b.epc.startsWith('SIM-')).length;
+    const pendente = total - comTag;
+    const pct      = Math.round((comTag/total)*100);
+    const stCls    = pendente===0 ? 'tag-verde' : pendente===total ? 'tag-amarelo' : 'tag-azul';
+    const stTxt    = pendente===0 ? 'Completo' : pendente+' sem tag';
+    return `<div class="lote-card" onclick="abrirLote('${lt.numero}')">
+      <div class="lote-card-topo">
+        <div>
+          <div class="lote-num">${lt.numero}</div>
+          <div class="lote-sub">${lt.cultivar} · ${lt.categoria} · ${total} bags</div>
+        </div>
+        <span class="tag ${stCls}">${stTxt}</span>
+      </div>
+      <div class="prog-wrap">
+        <div class="prog-bar" style="width:${pct}%"></div>
+      </div>
+      <div class="prog-txt">${comTag} de ${total} tags vinculadas (${pct}%)</div>
+    </div>`;
+  }).join('');
+
+  // Popular select de cultivares na tela de lotes também
+  const ltSel = g('ltCultivar');
+  if(ltSel && ltSel.children.length<=1){
+    ltSel.innerHTML='<option value="">Selecione...</option>'+
+      CULTIVARES.map(c=>`<option value="${c.id}">${c.nome}${c.fantasia?' — '+c.fantasia:''}</option>`).join('');
+  }
+}
+
+async function abrirLote(numero) {
+  if(!db) return;
+  loteAtivo = numero;
+  goTab('lote-detalhe');
+
+  const snap = await db.collection('bags').where('lote','==',numero).get();
+  const bags  = snap.docs.map(d=>({id:d.id,...d.data()}))
+    .sort((a,b)=>a.numero_bag.localeCompare(b.numero_bag));
+
+  const comTag   = bags.filter(b=>b.epc && !b.epc.startsWith('SIM-'));
+  const pendente = bags.filter(b=>!b.epc || b.epc.startsWith('SIM-'));
+
+  // Header
+  const b0 = bags[0]||{};
+  g('detalheNumero').textContent = numero;
+  g('detalheInfo').textContent   = (b0.cultivar_nome||'—')+' · '+(b0.categoria||'—')+' · '+(b0.produtor||'—');
+  g('dkTotal').textContent       = bags.length;
+  g('dkVinculados').textContent  = comTag.length;
+  g('dkPendentes').textContent   = pendente.length;
+
+  // Pendentes
+  if(pendente.length){
+    g('secPendentes').style.display='block';
+    g('listaPendentes').innerHTML = pendente.map(b=>`
+      <div class="linha-item">
+        <div>
+          <span class="item-num">${b.numero_bag}</span>
+          <span class="item-sub">Grave este número na tag NFC</span>
+        </div>
+        <span class="tag tag-amarelo">Sem tag</span>
+      </div>`).join('');
+  } else {
+    g('secPendentes').style.display='none';
+  }
+
+  // Vinculados
+  if(comTag.length){
+    g('secVinculados').style.display='block';
+    g('listaVinculados').innerHTML = comTag.map(b=>{
+      const stCls = {em_estoque:'tag-verde',expedido:'tag-amarelo',perdido:'tag-vermelho'}[b.status]||'tag-cinza';
+      const stTxt = {em_estoque:'Em estoque',expedido:'Expedido',perdido:'Perdido'}[b.status]||b.status||'—';
+      return `<div class="linha-item">
+        <div>
+          <span class="item-num">${b.numero_bag}</span>
+          <span class="item-sub mono" style="font-size:12px;color:var(--azul)">${b.epc||'—'}</span>
+        </div>
+        <span class="tag ${stCls}">${stTxt}</span>
+      </div>`;
+    }).join('');
+  } else {
+    g('secVinculados').style.display='none';
+  }
+
+  // Buscar expedições dos bags deste lote
+  await carregarExpedicoesDo(numero, bags);
+}
+
+async function carregarExpedicoesDo(lote, bags) {
+  const bagIds = bags.map(b=>b.id);
+  if(!bagIds.length) return;
+
+  // Buscar movimentações de expedição para os bags deste lote
+  const movSnap = await db.collection('movimentacoes')
+    .where('tipo_evento','==','saida_expedicao')
+    .orderBy('criado_em','desc')
+    .get();
+
+  // Filtrar apenas bags do lote
+  const movs = movSnap.docs
+    .map(d=>({id:d.id,...d.data()}))
+    .filter(m=>bagIds.includes(m.bag_id));
+
+  if(!movs.length){
+    g('secExpedicoes').style.display='none';
+    g('secClientes').style.display='none';
+    return;
+  }
+
+  // Buscar pedidos para pegar cliente e OC
+  const pedidoIds = [...new Set(movs.map(m=>m.observacao?.match(/pedido (.+)/)?.[1]).filter(Boolean))];
+  const pedidosMap = {};
+  for(const pid of pedidoIds){
+    const ps = await db.collection('pedidos_carga').where('numero_pedido','==',pid).limit(1).get();
+    if(!ps.empty){
+      const pd = ps.docs[0].data();
+      pedidosMap[pid] = { oc: pd.numero_pedido, cliente: pd.placa_veiculo||'—', motorista: pd.motorista||'—' };
+    }
+  }
+
+  // Agrupar por pedido
+  const porPedido = {};
+  for(const m of movs){
+    const pid = m.observacao?.match(/pedido (.+)/)?.[1] || 'Sem OC';
+    if(!porPedido[pid]) porPedido[pid] = { oc:pid, bags:[], data: m.criado_em };
+    // Encontrar bag correspondente
+    const bag = bags.find(b=>b.id===m.bag_id);
+    if(bag) porPedido[pid].bags.push(bag);
+  }
+
+  // Renderizar expedições
+  g('secExpedicoes').style.display='block';
+  g('listaExpedicoes').innerHTML = Object.values(porPedido).map(p=>{
+    const ped = pedidosMap[p.oc]||{};
+    return `<div class="expedicao-card">
+      <div class="expedicao-topo">
+        <div>
+          <div class="expedicao-oc">OC: ${p.oc}</div>
+          <div class="expedicao-cliente"><i class="ti ti-building-store"></i> ${ped.cliente||'—'}</div>
+          <div class="expedicao-motorista"><i class="ti ti-user"></i> ${ped.motorista||'—'}</div>
+        </div>
+        <span class="tag tag-amarelo">${p.bags.length} bag${p.bags.length>1?'s':''}</span>
+      </div>
+      <div class="expedicao-bags">
+        ${p.bags.map(b=>`<span class="bag-chip">${b.numero_bag}</span>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Resumo por cliente
+  const porCliente = {};
+  for(const p of Object.values(porPedido)){
+    const ped = pedidosMap[p.oc]||{};
+    const cli = ped.cliente||'Sem cliente';
+    if(!porCliente[cli]) porCliente[cli] = {cliente:cli, qtd:0, ocs:[]};
+    porCliente[cli].qtd += p.bags.length;
+    porCliente[cli].ocs.push(p.oc);
+  }
+
+  g('secClientes').style.display='block';
+  g('listaClientes').innerHTML = Object.values(porCliente).map(c=>`
+    <div class="linha-item">
+      <div>
+        <span class="item-num">${c.cliente}</span>
+        <span class="item-sub">${c.ocs.join(', ')}</span>
+      </div>
+      <span class="tag tag-azul">${c.qtd} bag${c.qtd>1?'s':''}</span>
+    </div>`).join('');
+}
+
+// ── DESVINCULAR TAG ──
+let bagParaDesvincular = null;
+let epcDesvinculaTimer = null;
+
+window.onEpcDesvincular = function(val) {
+  clearTimeout(epcDesvinculaTimer);
+  const st = g('epcDesvinculaStatus');
+  bagParaDesvincular = null;
+  g('desvinculaPreview').style.display = 'none';
+  g('btnDesvincular').style.display = 'none';
+  if(!val){ st.textContent=''; return; }
+  st.textContent = 'Buscando...';
+  epcDesvinculaTimer = setTimeout(async()=>{
+    const epc = val.trim().replace(/[
+
+]/g,'');
+    if(epc.length < 4) return;
+    if(!db){ flash('Firebase não conectado','err'); return; }
+
+    // Buscar bag com esse EPC
+    const snap = await db.collection('bags').where('epc','==',epc).get();
+    if(snap.empty){
+      st.innerHTML = '<span style="color:var(--vermelho)">Tag não encontrada no sistema</span>';
+      return;
+    }
+
+    const bagDoc = snap.docs[0];
+    const bag    = bagDoc.data();
+
+    if(bag.status === 'aguardando_tag'){
+      st.innerHTML = '<span style="color:var(--amarelo)">Esta tag ainda não foi vinculada a nenhum bag</span>';
+      return;
+    }
+
+    bagParaDesvincular = { id: bagDoc.id, ...bag };
+    st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag encontrada</span>';
+
+    // Mostrar preview
+    const stTxt = {em_estoque:'Em estoque', expedido:'Expedido', perdido:'Perdido'}[bag.status]||bag.status;
+    const stCls = {em_estoque:'tag-verde', expedido:'tag-amarelo', perdido:'tag-vermelho'}[bag.status]||'tag-cinza';
+    g('desvinculaInfo').innerHTML = `
+      <div class="linha-item" style="border:none;padding:8px 0 0">
+        <div>
+          <span class="item-num">${bag.numero_bag}</span>
+          <span class="item-sub">${bag.cultivar_nome||'—'} · ${bag.lote||'—'}</span>
+          <span class="item-sub mono" style="color:var(--azul);font-size:12px">${epc}</span>
+        </div>
+        <span class="tag ${stCls}">${stTxt}</span>
+      </div>`;
+    g('desvinculaPreview').style.display = 'block';
+    g('btnDesvincular').style.display    = 'flex';
+  }, 500);
+};
+
+async function desvinculaTag() {
+  if(!bagParaDesvincular || !db) return;
+  const bag = bagParaDesvincular;
+  const epc = g('epcDesvincular').value.trim();
+
+  if(!confirm(`Desvincular a tag "${epc}" do bag ${bag.numero_bag}?
+
+O histórico será mantido e a tag ficará disponível para reutilização.`)) return;
+
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Salvar EPC anterior no histórico e zerar no bag
+  await db.collection('bags').doc(bag.id).update({
+    epc:           null,
+    epc_anterior:  epc,
+    status:        bag.status === 'em_estoque' ? 'em_estoque' : bag.status,
+    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  // Registrar evento de devolução
+  await db.collection('movimentacoes').add({
+    bag_id:      bag.id,
+    numero_bag:  bag.numero_bag,
+    tipo_evento: 'devolucao_tag',
+    observacao:  `Tag devolvida — EPC ${epc} liberado para reutilização`,
+    epc_devolvido: epc,
+    operador:    op,
+    dispositivo: dev,
+    criado_em:   firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  flash('Tag liberada! Regrave com o NFC Tools e vincule ao novo bag.', 'ok');
+
+  // Limpar campos
+  g('epcDesvincular').value = '';
+  g('epcDesvinculaStatus').textContent = '';
+  g('desvinculaPreview').style.display = 'none';
+  g('btnDesvincular').style.display    = 'none';
+  bagParaDesvincular = null;
+}
+
 // ── LEITURA NFC ──
 let nfcAtivo = false;
 let nfcReader = null;
@@ -668,6 +1172,66 @@ function carregarPreferencias() {
 }
 
 function g(id){ return document.getElementById(id); }
+
+// ── LOTES ──
+
+
+
+
+// ── DESVINCULAR TAG ──
+let bagParaDesvincular = null;
+let epcDesvinculaTimer = null;
+
+window.onEpcDesvincular = function(val) {
+  clearTimeout(epcDesvinculaTimer);
+  const st = g('epcDesvinculaStatus');
+  bagParaDesvincular = null;
+  g('desvinculaPreview').style.display = 'none';
+  g('btnDesvincular').style.display = 'none';
+  if(!val){ st.textContent=''; return; }
+  st.textContent = 'Buscando...';
+  epcDesvinculaTimer = setTimeout(async()=>{
+    const epc = val.trim().replace(/[
+
+]/g,'');
+    if(epc.length < 4) return;
+    if(!db){ flash('Firebase não conectado','err'); return; }
+
+    // Buscar bag com esse EPC
+    const snap = await db.collection('bags').where('epc','==',epc).get();
+    if(snap.empty){
+      st.innerHTML = '<span style="color:var(--vermelho)">Tag não encontrada no sistema</span>';
+      return;
+    }
+
+    const bagDoc = snap.docs[0];
+    const bag    = bagDoc.data();
+
+    if(bag.status === 'aguardando_tag'){
+      st.innerHTML = '<span style="color:var(--amarelo)">Esta tag ainda não foi vinculada a nenhum bag</span>';
+      return;
+    }
+
+    bagParaDesvincular = { id: bagDoc.id, ...bag };
+    st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag encontrada</span>';
+
+    // Mostrar preview
+    const stTxt = {em_estoque:'Em estoque', expedido:'Expedido', perdido:'Perdido'}[bag.status]||bag.status;
+    const stCls = {em_estoque:'tag-verde', expedido:'tag-amarelo', perdido:'tag-vermelho'}[bag.status]||'tag-cinza';
+    g('desvinculaInfo').innerHTML = `
+      <div class="linha-item" style="border:none;padding:8px 0 0">
+        <div>
+          <span class="item-num">${bag.numero_bag}</span>
+          <span class="item-sub">${bag.cultivar_nome||'—'} · ${bag.lote||'—'}</span>
+          <span class="item-sub mono" style="color:var(--azul);font-size:12px">${epc}</span>
+        </div>
+        <span class="tag ${stCls}">${stTxt}</span>
+      </div>`;
+    g('desvinculaPreview').style.display = 'block';
+    g('btnDesvincular').style.display    = 'flex';
+  }, 500);
+};
+
 
 // ── LEITURA NFC ──
 
@@ -1161,6 +1725,86 @@ select option{background:var(--bg2)}
 .estado-vazio i{font-size:3.0rem;color:var(--texto3);display:block;margin-bottom:10px}
 .estado-vazio p{font-size:0.9375rem}
 
+/* ── LOTES ── */
+.lote-card{
+  background:var(--bg2);border:1px solid var(--borda);
+  border-radius:var(--r);padding:16px;margin-bottom:12px;
+  cursor:pointer;transition:border-color .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.lote-card:active{border-color:var(--azul)}
+.lote-card-topo{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;gap:8px}
+.lote-num{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:22px;font-weight:800;color:var(--texto);
+}
+.lote-sub{font-size:13px;color:var(--texto2);margin-top:2px}
+.prog-wrap{
+  height:6px;background:var(--bg4);
+  border-radius:3px;overflow:hidden;margin-bottom:6px;
+}
+.prog-bar{
+  height:100%;background:var(--verde);
+  border-radius:3px;transition:width .3s;
+}
+.prog-txt{font-size:12px;color:var(--texto3);font-family:'IBM Plex Mono',monospace}
+
+/* ── EXPEDIÇÕES NO LOTE ── */
+.expedicao-card{
+  background:var(--bg3);border-radius:var(--r-sm);
+  padding:14px;margin-bottom:10px;
+}
+.expedicao-card:last-child{margin-bottom:0}
+.expedicao-topo{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;gap:8px}
+.expedicao-oc{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:17px;font-weight:800;color:var(--texto);margin-bottom:3px;
+}
+.expedicao-cliente{font-size:13px;color:var(--texto2);display:flex;align-items:center;gap:5px;margin-bottom:2px}
+.expedicao-motorista{font-size:13px;color:var(--texto3);display:flex;align-items:center;gap:5px}
+.expedicao-bags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.bag-chip{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;font-weight:600;
+  background:var(--bg4);color:var(--texto2);
+  padding:3px 8px;border-radius:4px;
+}
+
+/* ── DESVINCULAR PREVIEW ── */
+.desvincular-preview{
+  background:var(--bg3);
+  border:1px solid var(--borda2);
+  border-radius:var(--r-sm);
+  padding:4px 14px 10px;
+  margin-bottom:12px;
+}
+.desvincular-preview-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--texto3);text-transform:uppercase;
+  letter-spacing:.5px;margin-bottom:2px;
+  padding-top:10px;
+}
+
+/* ── DEVOLUÇÃO RÁPIDA ── */
+.btn-devol{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:7px 12px;
+  border-radius:var(--r-sm);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:14px;font-weight:700;
+  cursor:pointer;
+  background:var(--verm-dim);
+  color:var(--vermelho);
+  border:1px solid rgba(248,113,113,.25);
+  white-space:nowrap;
+  flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+  transition:opacity .15s;
+}
+.btn-devol:active{opacity:.7}
+.btn-devol i{font-size:16px}
+
 /* ── FLASH ── */
 .flash{
   position:fixed;
@@ -1205,6 +1849,9 @@ select option{background:var(--bg2)}
 
 <!-- NAVEGAÇÃO -->
 <nav class="nav">
+  <div class="nav-item" id="nav-lotes" onclick="goTab('lotes')">
+    <i class="ti ti-clipboard-list"></i>Lotes
+  </div>
   <div class="nav-item active" id="nav-vincular" onclick="goTab('vincular')">
     <i class="ti ti-tag"></i>Vincular
   </div>
@@ -1223,9 +1870,136 @@ select option{background:var(--bg2)}
 </nav>
 
 <!-- ══ VINCULAR ══ -->
+<main class="screen" id="screen-lotes">
+  <div class="pg-titulo">Lotes</div>
+  <div class="pg-sub">Crie lotes e gerencie as tags de cada bag</div>
+
+  <!-- FORMULÁRIO NOVO LOTE -->
+  <div class="secao" id="formNovoLote">
+    <div class="secao-titulo"><i class="ti ti-plus"></i> Novo lote</div>
+    <div class="campo">
+      <label>Número do lote *</label>
+      <input id="ltNumero" type="text" placeholder="Ex: 26S01A"/>
+    </div>
+    <div class="campo">
+      <label>Cultivar *</label>
+      <select id="ltCultivar"></select>
+    </div>
+    <div class="campo-linha">
+      <div>
+        <label>Categoria</label>
+        <select id="ltCategoria">
+          <option value="C1">C1</option>
+          <option value="C2">C2</option>
+          <option value="S1">S1</option>
+          <option value="S2">S2</option>
+        </select>
+      </div>
+      <div>
+        <label>Qtd de bags *</label>
+        <input id="ltQtd" type="number" placeholder="Ex: 20" min="1" max="100"/>
+      </div>
+    </div>
+    <div class="campo-linha">
+      <div>
+        <label>Peneira</label>
+        <input id="ltPeneira" type="text" placeholder="Ex: P1"/>
+      </div>
+      <div>
+        <label>Peso por bag (kg)</label>
+        <input id="ltPeso" type="number" placeholder="Ex: 1000" step="0.1"/>
+      </div>
+    </div>
+    <div class="campo">
+      <label>Tratamento</label>
+      <input id="ltTratamento" type="text" placeholder="Ex: SEM TSI"/>
+    </div>
+    <div class="campo">
+      <label>Produtor</label>
+      <input id="ltProdutor" type="text" placeholder="Nome do produtor"/>
+    </div>
+    <div class="campo">
+      <label>Localização inicial</label>
+      <input id="ltLocalizacao" type="text" placeholder="Ex: A3B10"/>
+    </div>
+    <button class="btn btn-azul" onclick="criarLote()">
+      <i class="ti ti-clipboard-plus"></i> Criar lote e gerar bags
+    </button>
+  </div>
+
+  <!-- LISTA DE LOTES -->
+  <div class="secao-label">LOTES CADASTRADOS</div>
+  <div id="lotesLista"><p class="vazio">Carregando...</p></div>
+</main>
+
+<!-- DETALHE DO LOTE (tela dentro de lotes) -->
+<main class="screen" id="screen-lote-detalhe">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+    <button onclick="goTab('lotes')" style="background:none;border:none;color:var(--azul);cursor:pointer;font-size:24px;padding:0;-webkit-tap-highlight-color:transparent">
+      <i class="ti ti-arrow-left"></i>
+    </button>
+    <div class="pg-titulo" id="detalheNumero">—</div>
+  </div>
+  <div class="pg-sub" id="detalheInfo">—</div>
+
+  <!-- KPIs do lote -->
+  <div class="kpi-row" style="grid-template-columns:repeat(3,1fr)">
+    <div class="kpi">
+      <div class="kpi-val" id="dkTotal" style="color:var(--azul)">—</div>
+      <div class="kpi-lbl">Total</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="dkVinculados" style="color:var(--verde)">—</div>
+      <div class="kpi-lbl">Com tag</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="dkPendentes" style="color:var(--amarelo)">—</div>
+      <div class="kpi-lbl">Sem tag</div>
+    </div>
+  </div>
+
+  <!-- Bags pendentes (sem tag) -->
+  <div id="secPendentes" class="secao">
+    <div class="secao-titulo" style="color:var(--amarelo)"><i class="ti ti-clock"></i> Aguardando tag</div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:12px;line-height:1.5">
+      Grave o número de cada bag na tag NFC (app <strong>NFC Tools</strong>) e depois vincule na aba <strong>Vincular</strong>.
+    </p>
+    <div id="listaPendentes"></div>
+  </div>
+
+  <!-- Bags vinculados -->
+  <div id="secVinculados" class="secao" style="display:none">
+    <div class="secao-titulo" style="color:var(--verde)"><i class="ti ti-checks"></i> Tags vinculadas</div>
+    <div id="listaVinculados"></div>
+  </div>
+
+  <!-- Expedições do lote -->
+  <div id="secExpedicoes" class="secao" style="display:none">
+    <div class="secao-titulo" style="color:var(--azul)"><i class="ti ti-truck"></i> Expedições deste lote</div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:12px;line-height:1.5">
+      Bags deste lote distribuídos por ordem de carregamento e cliente.
+    </p>
+    <div id="listaExpedicoes"></div>
+  </div>
+
+  <!-- Resumo por cliente -->
+  <div id="secClientes" class="secao" style="display:none">
+    <div class="secao-titulo"><i class="ti ti-users"></i> Resumo por cliente</div>
+    <div id="listaClientes"></div>
+  </div>
+</main>
+
 <main class="screen active" id="screen-vincular">
-  <div class="pg-titulo">Vincular bag</div>
-  <div class="pg-sub">Leia a tag e preencha os dados do bag</div>
+  <div class="pg-titulo">Vincular tag</div>
+  <div class="pg-sub">Aproxime a tag NFC do celular para vincular</div>
+
+  <!-- Banner próximo bag pendente -->
+  <div id="proximoInfo" style="display:none;align-items:center;gap:10px;
+    background:var(--verde-dim);border:1px solid rgba(52,211,153,.3);
+    border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:15px;color:var(--texto)">
+    <i class="ti ti-arrow-right" style="color:var(--verde);font-size:20px;flex-shrink:0"></i>
+    <span id="proximoInfoTxt">—</span>
+  </div>
 
   <div id="banner" class="banner">
     <i class="ti ti-alert-triangle"></i>
@@ -1316,6 +2090,38 @@ select option{background:var(--bg2)}
   <button class="btn btn-cinza" onclick="goTab('buscar')">
     <i class="ti ti-search"></i> Buscar bag existente
   </button>
+
+  <div style="display:flex;align-items:center;gap:10px;margin:6px 0">
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+    <span style="font-size:12px;color:var(--texto3)">REUTILIZAR TAG</span>
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+  </div>
+
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-unlink"></i> Desvincular tag</div>
+    <p style="font-size:14px;color:var(--texto2);margin-bottom:12px;line-height:1.6">
+      Leia a tag que será reutilizada. O sistema registra a devolução e libera o EPC para um novo bag — sem perder o histórico.
+    </p>
+    <div class="campo">
+      <label>EPC da tag a desvincular</label>
+      <div class="epc-wrap">
+        <input class="epc-input" id="epcDesvincular" type="text"
+          placeholder="Aproxime a tag ou digite o EPC..."
+          autocomplete="off" autocorrect="off" spellcheck="false"
+          oninput="onEpcDesvincular(this.value)"/>
+        <button class="epc-limpar" onclick="clearField('epcDesvincular')">✕</button>
+      </div>
+      <div class="epc-status" id="epcDesvinculaStatus"></div>
+    </div>
+    <!-- Preview do bag que será desvinculado -->
+    <div id="desvinculaPreview" style="display:none" class="desvincular-preview">
+      <div class="desvincular-preview-titulo">Tag vinculada a:</div>
+      <div id="desvinculaInfo"></div>
+    </div>
+    <button class="btn btn-verm" id="btnDesvincular" onclick="desvinculaTag()" style="display:none">
+      <i class="ti ti-unlink"></i> Confirmar devolução da tag
+    </button>
+  </div>
 </main>
 
 <!-- ══ EXPEDIÇÃO ══ -->
@@ -1327,13 +2133,13 @@ select option{background:var(--bg2)}
     <div class="secao">
       <div class="secao-titulo"><i class="ti ti-truck"></i> Novo carregamento</div>
       <div class="campo">
-        <label>Número do pedido / NF</label>
-        <input id="numPedido" type="text" placeholder="Ex: NF 001238"/>
+        <label>N° da ordem de carregamento</label>
+        <input id="numPedido" type="text" placeholder="Ex: OC-001"/>
       </div>
       <div class="campo-linha">
         <div>
-          <label>Placa</label>
-          <input id="placa" type="text" placeholder="ABC-1234"/>
+          <label>Cliente</label>
+          <input id="placa" type="text" placeholder="Ex: Cooperativa XYZ"/>
         </div>
         <div>
           <label>Motorista</label>
@@ -1398,6 +2204,22 @@ select option{background:var(--bg2)}
     <button class="btn btn-cinza" onclick="cancelarPedido()">
       <i class="ti ti-x"></i> Cancelar
     </button>
+  </div>
+
+  <!-- Painel de devolução de tags após expedição -->
+  <div id="painelDevolucao" style="display:none;margin-top:4px">
+    <div class="secao" style="border-color:rgba(251,191,36,.3)">
+      <div class="secao-titulo" style="color:var(--amarelo)">
+        <i class="ti ti-tag-off"></i> Remova e libere as tags
+      </div>
+      <p style="font-size:14px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
+        Retire a tag de cada bag expedido e toque <strong style="color:var(--texto)">Liberar tag</strong> para disponibilizar para o próximo lote.
+      </p>
+      <div id="painelDevolucaoLista"></div>
+      <button class="btn btn-cinza" style="margin-top:12px" onclick="g('painelDevolucao').style.display='none'">
+        <i class="ti ti-x"></i> Fechar sem liberar
+      </button>
+    </div>
   </div>
 </main>
 
