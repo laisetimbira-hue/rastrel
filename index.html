@@ -162,6 +162,26 @@ function carregarCfgForm() {
   g('cfgDev').value=localStorage.getItem('dispositivo')||'';
 }
 
+// Atualizar info de ocupação quando selecionar posição
+async function atualizarInfoPosicao() {
+  const pos = g('ltLocalizacao').value;
+  const info = g('ltLocInfo');
+  if(!info) return;
+  if(!pos || pos === 'transito'){ info.textContent=''; return; }
+  if(!db){ info.textContent=''; return; }
+  const snap = await db.collection('bags')
+    .where('localizacao_atual','==',pos)
+    .where('status','in',['em_estoque','aguardando_tag']).get();
+  const lotes = new Set(snap.docs.map(d=>d.data().lote||d.id));
+  const livre = 6 - lotes.size;
+  const posLabel = lotes.size===0?'fundo (1° lote)':lotes.size===1?'meio (2° lote)':lotes.size===2?'frente (3° lote)':`posição ${lotes.size+1}`;
+  if(livre > 0){
+    info.innerHTML = `<span style="color:var(--verde)">✓ ${lotes.size}/6 lotes — vai para o <strong>${posLabel}</strong></span>`;
+  } else {
+    info.innerHTML = `<span style="color:var(--vermelho)">✗ Posição cheia (6/6 lotes)</span>`;
+  }
+}
+
 function preencherCultivares() {
   g('cultivarSelect').innerHTML='<option value="">Selecione a cultivar...</option>'+
     CULTIVARES.map(c=>`<option value="${c.id}">${c.nome}${c.fantasia?' — '+c.fantasia:''}</option>`).join('');
@@ -185,6 +205,7 @@ function goTab(name) {
   g('screen-'+name).classList.add('active');
   if(name==='dashboard') carregarDashboard();
   if(name==='lotes') carregarLotes();
+  if(name==='mapa') carregarMapa();
   window.scrollTo(0,0);
 };
 
@@ -719,19 +740,32 @@ async function criarLote() {
   const peso         = parseFloat(g('ltPeso').value)||null;
   const tratamento   = g('ltTratamento').value.trim();
   const produtor     = g('ltProdutor').value.trim();
-  const localizacao  = g('ltLocalizacao').value.trim() || 'Armazém';
+  const localizacao = g('ltLocalizacao').value || '';
+  const locFinal    = localizacao === 'transito' ? '' : localizacao;
+
+  // Calcular slot na posição (ordem de chegada)
+  let slotPosicao = null;
+  if(locFinal){
+    const snapPos = await db.collection('bags')
+      .where('localizacao_atual','==',locFinal)
+      .where('status','in',['em_estoque','aguardando_tag']).get();
+    const lotesJa = new Set(snapPos.docs.map(d=>d.data().lote||d.id));
+    slotPosicao = lotesJa.size; // 0=fundo, 1=meio, 2=frente...
+  }
 
   for(let i=1; i<=qtd; i++){
     const numeroBag = numero+'-'+String(i).padStart(2,'0');
     await db.collection('bags').add({
-      epc:            null,           // sem tag ainda
+      epc:            null,
       numero_bag:     numeroBag,
       lote:           numero,
       cultivar_id:    cultivar,
       cultivar_nome:  cultivarNome,
       categoria,peneira,peso_kg:peso,
       tratamento,produtor,
-      localizacao_atual: localizacao,
+      localizacao_atual: locFinal,
+      slot_posicao:   slotPosicao,
+      entrada_posicao: locFinal ? firebase.firestore.FieldValue.serverTimestamp() : null,
       status:         'aguardando_tag',
       criado_em:      firebase.firestore.FieldValue.serverTimestamp(),
       atualizado_em:  firebase.firestore.FieldValue.serverTimestamp(),
@@ -938,6 +972,567 @@ async function carregarExpedicoesDo(lote, bags) {
     </div>`).join('');
 }
 
+// ── MAPA ARMAZÉM 3 ──
+// Estrutura: cada posição comporta 6 bags (3x2)
+const CAPACIDADE_POSICAO = 6;
+
+// Lado de cima: B11 → B21 (esquerda para direita)
+const CIMA  = Array.from({length:11}, (_,i) => `A3B${i+11}`);
+// Lado de baixo: B10 → B1 (direita para esquerda)
+const BAIXO = Array.from({length:10}, (_,i) => `A3B${10-i}`);
+
+// Mapa de cores por cultivar
+const CULT_CORES = {
+  'zeus':     '#4f8ef7',
+  'grafeno':  '#a78bfa',
+  'raca':     '#34d399',
+  'c2530':    '#fbbf24',
+  'c2645':    '#f87171',
+  'raio':     '#06b6d4',
+  'titanium': '#f59e0b',
+  'orion':    '#8b5cf6',
+  'venus':    '#ec4899',
+  'fibra':    '#10b981',
+};
+
+function corCultivar(cultivarId) {
+  return CULT_CORES[cultivarId] || '#8899b4';
+}
+
+async function carregarMapa() {
+  if(!db) return;
+
+  // Buscar todos os bags em estoque ou aguardando tag
+  const snap = await db.collection('bags')
+    .where('status','in',['em_estoque','aguardando_tag'])
+    .get();
+
+  const bags = snap.docs.map(d=>({id:d.id,...d.data()}));
+
+  // Agrupar por localização
+  const porPosicao = {};
+  for(const b of bags){
+    const loc = (b.localizacao_atual||'').toUpperCase().replace(/ /g,'').replace(/	/g,'');
+    if(!loc) continue;
+    if(!porPosicao[loc]) porPosicao[loc] = [];
+    porPosicao[loc].push(b);
+  }
+
+  renderGrade('gradeCima',  CIMA,  porPosicao);
+  renderGrade('gradeBaixo', BAIXO, porPosicao);
+}
+
+function renderGrade(elId, posicoes, porPosicao) {
+  const el = g(elId);
+  if(!el) return;
+
+  el.innerHTML = posicoes.map(pos => {
+    const bags = porPosicao[pos] || [];
+
+    // Agrupar bags por lote — cada lote ocupa 1 slot
+    const lotesMap = {};
+    for(const b of bags){
+      const loteKey = b.lote || b.numero_bag?.split('-')[0] || b.id;
+      if(!lotesMap[loteKey]){
+        lotesMap[loteKey] = {
+          lote: loteKey,
+          cultivar_id: b.cultivar_id,
+          cultivar_nome: b.cultivar_nome||'—',
+          qtd_bags: 0,
+          bag_id: b.id,
+          slot_posicao: b.slot_posicao ?? null,
+        };
+      }
+      lotesMap[loteKey].qtd_bags++;
+      // Usar slot_posicao do primeiro bag que tiver
+      if(b.slot_posicao != null && lotesMap[loteKey].slot_posicao == null){
+        lotesMap[loteKey].slot_posicao = b.slot_posicao;
+      }
+    }
+
+    // Ordenar lotes por slot_posicao (ordem de chegada: 0=fundo → frente)
+    const lotes = Object.values(lotesMap);
+    lotes.sort((a,b)=>{
+      const sa = a.slot_posicao ?? 99;
+      const sb = b.slot_posicao ?? 99;
+      return sa - sb; // menor = chegou primeiro = fundo
+    });
+
+    // Montar array de 6 slots
+    const slots = Array(6).fill(null);
+    // Lotes com slot definido vão para o slot deles
+    for(const lt of lotes){
+      if(lt.slot_posicao != null && lt.slot_posicao < 6 && !slots[lt.slot_posicao]){
+        slots[lt.slot_posicao] = lt;
+      }
+    }
+    // Lotes sem slot preenchem os vazios em ordem
+    for(const lt of lotes){
+      if(lt.slot_posicao == null || slots[lt.slot_posicao] !== lt){
+        const idx = slots.indexOf(null);
+        if(idx >= 0) slots[idx] = lt;
+      }
+    }
+
+    const numLabel = pos.replace('A3B','B');
+    const totalLotes = lotes.length;
+
+    const renderSlot = (lt, idx) => {
+      if(!lt) return `<div class="slot slot-vazio"
+        onclick="event.stopPropagation();abrirSlot('${pos}',${idx})">
+        <span class="slot-vazio-txt">+</span>
+      </div>`;
+      const cor = corCultivar(lt.cultivar_id);
+      const nome = (lt.cultivar_nome||'').split('—')[1]?.trim() ||
+                   (lt.cultivar_nome||'').split(' ')[0] || '?';
+      return `<div class="slot slot-ocupado" style="background:${cor}22;border-color:${cor}66"
+        onclick="event.stopPropagation();abrirSlotLote('${lt.lote}','${pos}',${idx})">
+        <div class="slot-cultivar" style="color:${cor}">${nome}</div>
+        <div class="slot-lote">${lt.lote}</div>
+        <div class="slot-bags">${lt.qtd_bags}bg</div>
+      </div>`;
+    };
+
+    return `<div class="posicao-nova" onclick="abrirPosicao('${pos}')">
+      <div class="posicao-nova-header">
+        <span class="posicao-nova-num">${numLabel}</span>
+        <span class="posicao-nova-qtd">${totalLotes}/6</span>
+      </div>
+      <div class="posicao-grid">
+        <div class="posicao-col">
+          ${renderSlot(slots[0],0)}
+          ${renderSlot(slots[1],1)}
+          ${renderSlot(slots[2],2)}
+        </div>
+        <div class="posicao-col">
+          ${renderSlot(slots[3],3)}
+          ${renderSlot(slots[4],4)}
+          ${renderSlot(slots[5],5)}
+        </div>
+      </div>
+      <div class="posicao-nova-labels">
+        <span>fundo</span><span>frente</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function abrirPosicao(pos) {
+  if(!db) return;
+
+  const snap = await db.collection('bags')
+    .where('localizacao_atual','==',pos)
+    .get();
+
+  const bags = snap.docs.map(d=>({id:d.id,...d.data()}));
+  const livre = CAPACIDADE_POSICAO - bags.length;
+
+  g('modalTitulo').textContent  = pos;
+  g('modalTotal').textContent   = CAPACIDADE_POSICAO;
+  g('modalOcupado').textContent = bags.length;
+  g('modalLivre').textContent   = Math.max(0, livre);
+
+  const stCls = {em_estoque:'tag-verde',expedido:'tag-amarelo',aguardando_tag:'tag-amarelo',perdido:'tag-vermelho'};
+  const stTxt = {em_estoque:'Estoque',expedido:'Expedido',aguardando_tag:'Sem tag',perdido:'Perdido'};
+
+  g('modalBags').innerHTML = !bags.length
+    ? '<p class="vazio" style="padding:16px 0;text-align:center">Posição vazia</p>'
+    : bags.map(b=>`
+        <div class="linha-item">
+          <div>
+            <span class="item-num">${b.numero_bag}</span>
+            <span class="item-sub">${b.cultivar_nome||'—'} · ${b.lote||'—'}</span>
+          </div>
+          <span class="tag ${stCls[b.status]||'tag-cinza'}">${stTxt[b.status]||b.status}</span>
+        </div>`).join('');
+
+  g('modalPosicao').style.display = 'flex';
+}
+
+function fecharModal() {
+  g('modalPosicao').style.display = 'none';
+}
+
+async function abrirSlotLote(lote, pos, slotIdx) {
+  if(!db) return;
+
+  // Buscar todos os bags deste lote nesta posição
+  const snap = await db.collection('bags')
+    .where('lote','==', lote)
+    .get();
+
+  const bags = snap.docs.map(d=>({id:d.id,...d.data()}))
+    .filter(b=> (b.localizacao_atual||'').toUpperCase().replace(/ /g,'') === pos.toUpperCase());
+
+  const b0 = bags[0] || {};
+  const cor = corCultivar(b0.cultivar_id);
+  const stTxt = {em_estoque:'Em estoque',expedido:'Expedido',aguardando_tag:'Sem tag'};
+  const stCls = {em_estoque:'tag-verde',expedido:'tag-amarelo',aguardando_tag:'tag-amarelo'};
+
+  g('modalTitulo').textContent  = lote;
+  g('modalTotal').textContent   = bags.length;
+  g('modalOcupado').textContent = bags.filter(b=>b.status==='em_estoque').length;
+  g('modalLivre').textContent   = bags.filter(b=>b.status==='aguardando_tag').length;
+
+  g('modalBags').innerHTML = `
+    <div style="margin-bottom:10px;padding:10px;background:${cor}15;border-radius:var(--r-sm);border:1px solid ${cor}33">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:700;color:${cor}">${b0.cultivar_nome||'—'}</div>
+      <div style="font-size:12px;color:var(--texto2);margin-top:2px">${b0.categoria||'—'} · ${b0.produtor||'—'} · ${b0.peso_kg?b0.peso_kg+' kg/bag':'—'}</div>
+    </div>
+    <div style="margin-bottom:8px">
+      ${bags.map(b=>`
+        <div class="linha-item">
+          <div>
+            <span class="item-num">${b.numero_bag}</span>
+            <span class="item-sub mono" style="font-size:11px;color:var(--azul)">${b.epc||'sem tag'}</span>
+          </div>
+          <span class="tag ${stCls[b.status]||'tag-cinza'}">${stTxt[b.status]||b.status}</span>
+        </div>`).join('')}
+    </div>
+    <button class="btn btn-verm" onclick="removerLoteDoPosicao('${lote}','${pos}')">
+      <i class="ti ti-map-pin-off"></i> Remover lote desta posição
+    </button>`;
+
+  g('modalPosicao').style.display = 'flex';
+}
+
+async function moverParcialLote(lote, pos) {
+  if(!db) return;
+
+  // Buscar todos os bags do lote nesta posição
+  const snap = await db.collection('bags').where('lote','==',lote).get();
+  const bags = snap.docs
+    .map(d=>({id:d.id,...d.data()}))
+    .filter(b=>(b.localizacao_atual||'').toUpperCase().replace(/ /g,'') === pos.toUpperCase())
+    .sort((a,b)=> a.numero_bag.localeCompare(b.numero_bag));
+
+  if(!bags.length){ flash('Nenhum bag encontrado','err'); return; }
+
+  // Buscar posições disponíveis (que têm espaço)
+  const snapTodos = await db.collection('bags')
+    .where('status','in',['em_estoque','aguardando_tag']).get();
+  const porPos = {};
+  snapTodos.docs.forEach(d=>{
+    const loc = (d.data().localizacao_atual||'').toUpperCase().replace(/ /g,'');
+    if(loc) { if(!porPos[loc]) porPos[loc]=new Set(); porPos[loc].add(d.data().lote||d.id); }
+  });
+  const posicoesDisp = [...CIMA,...BAIXO]
+    .filter(p=>p!==pos && (!porPos[p] || porPos[p].size < 6))
+    .slice(0,12);
+
+  // Montar modal de seleção
+  const checkboxes = bags.map(b=>`
+    <div class="linha-item" style="cursor:pointer" onclick="toggleCheck('chk-${b.id}')">
+      <div style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="chk-${b.id}" value="${b.id}"
+          style="width:20px;height:20px;cursor:pointer" onclick="event.stopPropagation()"/>
+        <div>
+          <span class="item-num">${b.numero_bag}</span>
+          <span class="item-sub mono" style="font-size:11px">${b.epc||'sem tag'}</span>
+        </div>
+      </div>
+    </div>`).join('');
+
+  const posOpcoes = posicoesDisp.map(p=>{
+    const qtdLotes = porPos[p]?.size||0;
+    return `<option value="${p}">${p.replace('A3B','B')} (${qtdLotes}/6 lotes)</option>`;
+  }).join('');
+
+  g('modalTitulo').textContent  = 'Mover bags — '+lote;
+  g('modalTotal').textContent   = bags.length;
+  g('modalOcupado').textContent = '—';
+  g('modalLivre').textContent   = '—';
+
+  g('modalBags').innerHTML = `
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:10px;line-height:1.5">
+      Selecione os bags que deseja mover:
+    </p>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button onclick="selecionarTodos(true)"  class="btn btn-cinza" style="flex:1;padding:8px">Todos</button>
+      <button onclick="selecionarTodos(false)" class="btn btn-cinza" style="flex:1;padding:8px">Nenhum</button>
+    </div>
+    <div id="listaBagsParaMover" style="max-height:200px;overflow-y:auto;margin-bottom:12px">
+      ${checkboxes}
+    </div>
+    <div class="campo" style="margin-bottom:12px">
+      <label>Mover para:</label>
+      <select id="posDestino" style="width:100%">
+        <option value="">Selecione a posição destino...</option>
+        ${posOpcoes}
+      </select>
+    </div>
+    <button class="btn btn-azul" onclick="confirmarMovimentacao('${lote}','${pos}')">
+      <i class="ti ti-arrows-move"></i> Confirmar movimentação
+    </button>`;
+
+  g('modalPosicao').style.display = 'flex';
+}
+
+function toggleCheck(id) {
+  const el = document.getElementById(id);
+  if(el) el.checked = !el.checked;
+}
+
+function selecionarTodos(val) {
+  document.querySelectorAll('#listaBagsParaMover input[type=checkbox]')
+    .forEach(c => c.checked = val);
+}
+
+async function confirmarMovimentacao(lote, posOrigem) {
+  const destino = g('posDestino').value;
+  if(!destino){ flash('Selecione a posição destino','err'); return; }
+
+  const selecionados = [...document.querySelectorAll('#listaBagsParaMover input:checked')]
+    .map(c=>c.value);
+  if(!selecionados.length){ flash('Selecione ao menos 1 bag','err'); return; }
+
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Calcular slot no destino
+  const snapDest = await db.collection('bags').where('localizacao_atual','==',destino).get();
+  const lotesNoDest = new Set(snapDest.docs.map(d=>d.data().lote||d.id));
+  // Verificar se o lote já existe no destino
+  if(!lotesNoDest.has(lote)) lotesNoDest.add('__novo__');
+  const ordemDest = lotesNoDest.has(lote)
+    ? snapDest.docs.find(d=>d.data().lote===lote)?.data().slot_posicao ?? lotesNoDest.size
+    : lotesNoDest.size - 1;
+
+  for(const bagId of selecionados){
+    await db.collection('bags').doc(bagId).update({
+      localizacao_atual: destino,
+      slot_posicao:      ordemDest,
+      entrada_posicao:   firebase.firestore.FieldValue.serverTimestamp(),
+      atualizado_em:     firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    await db.collection('movimentacoes').add({
+      bag_id: bagId, tipo_evento: 'movimentacao_interna',
+      local_origem: posOrigem, local_destino: destino,
+      observacao: `Bag do lote ${lote} movido de ${posOrigem} → ${destino}`,
+      operador: op, dispositivo: dev,
+      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  fecharModal();
+  flash(`${selecionados.length} bag(s) movidos para ${destino}!`, 'ok');
+  carregarMapa();
+}
+
+async function removerLoteDoPosicao(lote, pos) {
+  if(!confirm('Remover todos os bags do lote '+lote+' desta posição?')) return;
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  const snap = await db.collection('bags').where('lote','==',lote).get();
+  for(const doc of snap.docs){
+    const b = doc.data();
+    if((b.localizacao_atual||'').toUpperCase().replace(/ /g,'') !== pos.toUpperCase()) continue;
+    await db.collection('bags').doc(doc.id).update({
+      localizacao_atual: '',
+      slot_posicao: null,
+      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    await db.collection('movimentacoes').add({
+      bag_id: doc.id, numero_bag: b.numero_bag,
+      tipo_evento: 'movimentacao_interna',
+      local_origem: pos, local_destino: '',
+      observacao: `Lote ${lote} removido de ${pos}`,
+      operador: op, dispositivo: dev,
+      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+  fecharModal();
+  flash('Lote '+lote+' removido de '+pos, 'ok');
+  carregarMapa();
+}
+
+async function abrirSlot(pos, slotIdx) {
+  // Abre modal para atribuir um lote a um slot vazio
+  if(!db) return;
+
+  // Buscar lotes disponíveis (em_estoque sem localização ou com outra)
+  const snap = await db.collection('bags')
+    .where('status','in',['em_estoque','aguardando_tag'])
+    .get();
+
+  // Agrupar por lote — mostrar 1 linha por lote, não por bag
+  const bags = snap.docs.map(d=>({id:d.id,...d.data()}))
+    .filter(b=> !b.localizacao_atual || b.localizacao_atual === '' || b.localizacao_atual === 'Armazém');
+
+  if(!bags.length){
+    flash('Nenhum lote disponível para alocar','warn');
+    return;
+  }
+
+  // Agrupar por lote
+  const lotesDisp = {};
+  for(const b of bags){
+    const loteKey = b.lote || b.numero_bag?.split('-')[0] || b.id;
+    if(!lotesDisp[loteKey]){
+      lotesDisp[loteKey] = {
+        lote: loteKey, bagId: b.id,
+        cultivar_nome: b.cultivar_nome||'—',
+        qtd: 0
+      };
+    }
+    lotesDisp[loteKey].qtd++;
+  }
+
+  const opcoes = Object.values(lotesDisp).slice(0,20).map(lt=>
+    `<div class="linha-item" style="cursor:pointer" onclick="alocarLoteNoPosicao('${lt.lote}','${pos}')">
+      <div>
+        <span class="item-num">${lt.lote}</span>
+        <span class="item-sub">${lt.cultivar_nome} · ${lt.qtd} bags</span>
+      </div>
+      <span class="tag tag-azul">Alocar</span>
+    </div>`).join('');
+
+  // Calcular quantos lotes já tem para mostrar posição
+  const snapPos = await db.collection('bags').where('localizacao_atual','==',pos).get();
+  const lotesNoLocal = new Set(snapPos.docs.map(d=>d.data().lote||d.id)).size;
+  const posLabel = lotesNoLocal===0?'fundo (1°)':lotesNoLocal===1?'meio (2°)':lotesNoLocal===2?'frente (3°)':`posição ${lotesNoLocal+1}`;
+
+  g('modalTitulo').textContent  = `${pos}`;
+  g('modalTotal').textContent   = '—';
+  g('modalOcupado').textContent = '—';
+  g('modalLivre').textContent   = '—';
+  g('modalBags').innerHTML = `
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:10px">
+      Vai para o <strong style="color:var(--texto)">${posLabel}</strong>. Selecione o lote:
+    </p>
+    ${opcoes}`;
+  g('modalPosicao').style.display = 'flex';
+}
+
+async function alocarLoteNoPosicao(lote, pos) {
+  if(!db) return;
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Contar lotes já na posição para definir ordem (fundo=0, meio=1, frente=2...)
+  const snapPos = await db.collection('bags').where('localizacao_atual','==',pos).get();
+  const lotesJa = new Set(snapPos.docs.map(d=>d.data().lote||d.id));
+  const ordemChegada = lotesJa.size;
+  const posLabel = ordemChegada===0?'fundo':ordemChegada===1?'meio':ordemChegada===2?'frente':`posição ${ordemChegada+1}`;
+
+  // Buscar todos os bags do lote
+  const snapLote = await db.collection('bags').where('lote','==',lote).get();
+  const bagsDoLote = snapLote.docs.filter(d=>{
+    const loc = d.data().localizacao_atual||'';
+    return !loc || loc === '' || loc === 'Armazém';
+  });
+
+  if(!bagsDoLote.length){
+    flash('Bags do lote '+lote+' já estão alocados','warn');
+    return;
+  }
+
+  // Atualizar todos os bags do lote
+  for(const doc of bagsDoLote){
+    await db.collection('bags').doc(doc.id).update({
+      localizacao_atual: pos,
+      slot_posicao:      ordemChegada,
+      entrada_posicao:   firebase.firestore.FieldValue.serverTimestamp(),
+      atualizado_em:     firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  // Registrar movimentação
+  await db.collection('movimentacoes').add({
+    tipo_evento:  'entrada_armazem',
+    local_destino: pos,
+    observacao:   `Lote ${lote} alocado em ${pos} — ${posLabel} (${bagsDoLote.length} bags)`,
+    operador: op, dispositivo: dev,
+    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  fecharModal();
+  flash(`Lote ${lote} → ${pos} ${posLabel}!`, 'ok');
+  carregarMapa();
+}
+
+async function alocarBagNoSlot(bagId, pos, slotIdx) {
+  if(!db) return;
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Contar quantos lotes já existem nesta posição para definir ordem
+  const snap = await db.collection('bags')
+    .where('localizacao_atual','==', pos).get();
+  const lotesExistentes = new Set(snap.docs.map(d=>d.data().lote||d.id));
+  const ordemChegada = lotesExistentes.size; // 0=fundo, 1=meio, 2=frente...
+
+  await db.collection('bags').doc(bagId).update({
+    localizacao_atual: pos,
+    slot_posicao:      ordemChegada,
+    entrada_posicao:   firebase.firestore.FieldValue.serverTimestamp(),
+    atualizado_em:     firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  await db.collection('movimentacoes').add({
+    bag_id: bagId, tipo_evento: 'entrada_armazem',
+    local_destino: pos,
+    observacao: `Alocado em ${pos} — posição ${ordemChegada+1} (${ordemChegada===0?'fundo':ordemChegada===1?'meio':'frente'})`,
+    operador: op, dispositivo: dev,
+    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  fecharModal();
+  flash(`Lote alocado em ${pos} — ${ordemChegada===0?'fundo':ordemChegada===1?'meio':'frente'}!`, 'ok');
+  carregarMapa();
+}
+
+async function abrirSlotBag(bagId, pos, slotIdx) {
+  if(!db) return;
+  const snap = await db.collection('bags').doc(bagId).get();
+  if(!snap.exists) return;
+  const bag = snap.data();
+
+  const stTxt = {em_estoque:'Em estoque',expedido:'Expedido',aguardando_tag:'Sem tag'}[bag.status]||bag.status;
+  const stCls = {em_estoque:'tag-verde',expedido:'tag-amarelo',aguardando_tag:'tag-amarelo'}[bag.status]||'tag-cinza';
+
+  g('modalTitulo').textContent  = bag.numero_bag;
+  g('modalTotal').textContent   = '—';
+  g('modalOcupado').textContent = '—';
+  g('modalLivre').textContent   = '—';
+  g('modalBags').innerHTML = `
+    <div class="detalhe-grid" style="margin-bottom:12px">
+      <div class="dr"><span class="dr-k">Cultivar</span><span class="dr-v">${bag.cultivar_nome||'—'}</span></div>
+      <div class="dr"><span class="dr-k">Lote</span><span class="dr-v">${bag.lote||'—'}</span></div>
+      <div class="dr"><span class="dr-k">Categoria</span><span class="dr-v">${bag.categoria||'—'}</span></div>
+      <div class="dr"><span class="dr-k">Peso</span><span class="dr-v">${bag.peso_kg?bag.peso_kg+' kg':'—'}</span></div>
+      <div class="dr"><span class="dr-k">Produtor</span><span class="dr-v">${bag.produtor||'—'}</span></div>
+      <div class="dr"><span class="dr-k">Status</span><span class="dr-v"><span class="tag ${stCls}">${stTxt}</span></span></div>
+    </div>
+    <button class="btn btn-verm" onclick="removerDoPosicao('${bagId}','${pos}')">
+      <i class="ti ti-map-pin-off"></i> Remover desta posição
+    </button>`;
+  g('modalPosicao').style.display = 'flex';
+}
+
+async function removerDoPosicao(bagId, pos) {
+  if(!confirm('Remover bag desta posição?')) return;
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  await db.collection('bags').doc(bagId).update({
+    localizacao_atual: '',
+    slot_posicao: null,
+    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  await db.collection('movimentacoes').add({
+    bag_id: bagId, tipo_evento: 'movimentacao_interna',
+    local_origem: pos, local_destino: '',
+    observacao: `Removido de ${pos}`,
+    operador: op, dispositivo: dev,
+    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  fecharModal();
+  flash('Bag removido da posição', 'ok');
+  carregarMapa();
+}
+
 // ── DESVINCULAR TAG ──
 let bagParaDesvincular = null;
 let epcDesvinculaTimer = null;
@@ -951,9 +1546,7 @@ window.onEpcDesvincular = function(val) {
   if(!val){ st.textContent=''; return; }
   st.textContent = 'Buscando...';
   epcDesvinculaTimer = setTimeout(async()=>{
-    const epc = val.trim().replace(/[
-
-]/g,'');
+    const epc = val.trim().replace(/[\n\r]/g,'');
     if(epc.length < 4) return;
     if(!db){ flash('Firebase não conectado','err'); return; }
 
@@ -1178,10 +1771,8 @@ function g(id){ return document.getElementById(id); }
 
 
 
-// ── DESVINCULAR TAG ──
-let bagParaDesvincular = null;
-let epcDesvinculaTimer = null;
-
+// ── MAPA ARMAZÉM 3 ──
+// Estrutura: cada posição comporta 6 bags (3x2)
 window.onEpcDesvincular = function(val) {
   clearTimeout(epcDesvinculaTimer);
   const st = g('epcDesvinculaStatus');
@@ -1191,9 +1782,7 @@ window.onEpcDesvincular = function(val) {
   if(!val){ st.textContent=''; return; }
   st.textContent = 'Buscando...';
   epcDesvinculaTimer = setTimeout(async()=>{
-    const epc = val.trim().replace(/[
-
-]/g,'');
+    const epc = val.trim().replace(/[\n\r]/g,'');
     if(epc.length < 4) return;
     if(!db){ flash('Firebase não conectado','err'); return; }
 
@@ -1805,6 +2394,165 @@ select option{background:var(--bg2)}
 .btn-devol:active{opacity:.7}
 .btn-devol i{font-size:16px}
 
+/* ── MAPA ── */
+.mapa-container{margin-bottom:16px}
+.mapa-label-lado{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:12px;font-weight:700;
+  color:var(--texto3);text-transform:uppercase;
+  letter-spacing:.5px;margin-bottom:6px;margin-top:12px;
+}
+.mapa-grade{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(100px,1fr));
+  gap:8px;
+  margin-bottom:4px;
+}
+/* Posição nova com grid de slots */
+.posicao-nova{
+  background:var(--bg2);
+  border:1px solid var(--borda);
+  border-radius:var(--r-sm);
+  padding:8px;
+  cursor:pointer;
+  transition:border-color .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.posicao-nova:active{border-color:var(--azul);transform:scale(.98)}
+.posicao-nova-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:6px;
+}
+.posicao-nova-num{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:15px;font-weight:800;color:var(--texto);
+}
+.posicao-nova-qtd{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;color:var(--texto3);
+}
+.posicao-nova-labels{
+  display:flex;justify-content:space-between;
+  font-size:9px;color:var(--texto3);
+  font-family:'Barlow Condensed',sans-serif;
+  font-weight:600;text-transform:uppercase;letter-spacing:.3px;
+  margin-top:4px;
+}
+.posicao-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:3px;
+}
+.posicao-col{
+  display:flex;flex-direction:column;gap:3px;
+}
+/* Slots individuais */
+.slot{
+  border-radius:4px;
+  padding:4px 5px;
+  min-height:36px;
+  display:flex;flex-direction:column;justify-content:center;
+  transition:opacity .15s,transform .1s;
+  -webkit-tap-highlight-color:transparent;
+}
+.slot:active{opacity:.7;transform:scale(.95)}
+.slot-vazio{
+  background:var(--bg4);
+  border:1px dashed var(--borda2);
+  align-items:center;justify-content:center;
+}
+.slot-vazio-txt{
+  font-size:16px;color:var(--texto3);line-height:1;
+}
+.slot-ocupado{
+  border:1px solid;
+}
+.slot-cultivar{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:11px;font-weight:800;
+  line-height:1.2;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;
+}
+.slot-lote{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:9px;color:var(--texto2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  margin-top:1px;
+}
+.slot-bags{
+  font-size:9px;color:var(--texto3);
+  font-family:'IBM Plex Mono',monospace;
+}
+.mapa-corredor{
+  text-align:center;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:13px;font-weight:700;
+  color:var(--texto3);
+  letter-spacing:2px;
+  padding:8px 0;
+  border-top:1px dashed var(--borda2);
+  border-bottom:1px dashed var(--borda2);
+  margin:10px 0;
+  display:flex;align-items:center;justify-content:center;gap:12px;
+}
+.mapa-corredor i{font-size:14px}
+.mapa-entrada{
+  text-align:center;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:14px;font-weight:700;
+  color:var(--azul);
+  padding:10px;
+  border:2px solid var(--azul);
+  border-radius:var(--r-sm);
+  margin-top:10px;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+}
+.mapa-legenda{
+  display:flex;flex-wrap:wrap;gap:10px;
+  margin-bottom:14px;
+}
+.legenda-item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--texto2)}
+.legenda-cor{width:14px;height:14px;border-radius:3px;flex-shrink:0}
+
+/* ── MODAL POSIÇÃO ── */
+.modal-posicao{
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.6);
+  z-index:500;
+  display:none;
+  align-items:flex-end;
+  justify-content:center;
+}
+.modal-posicao[style*="flex"]{display:flex!important}
+.modal-posicao-inner{
+  background:var(--bg2);
+  border-radius:var(--r) var(--r) 0 0;
+  padding:20px 16px;
+  width:100%;
+  max-height:80dvh;
+  overflow-y:auto;
+}
+.modal-posicao-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:14px;
+}
+.modal-posicao-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:26px;font-weight:800;color:var(--texto);
+}
+.modal-fechar{
+  background:var(--bg4);border:none;
+  width:36px;height:36px;border-radius:50%;
+  color:var(--texto2);font-size:18px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  -webkit-tap-highlight-color:transparent;
+}
+.modal-posicao-kpis{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:8px;margin-bottom:14px;
+}
+.modal-bags-lista{border-top:1px solid var(--borda);padding-top:4px}
+
 /* ── FLASH ── */
 .flash{
   position:fixed;
@@ -1849,6 +2597,9 @@ select option{background:var(--bg2)}
 
 <!-- NAVEGAÇÃO -->
 <nav class="nav">
+  <div class="nav-item" id="nav-mapa" onclick="goTab('mapa')">
+    <i class="ti ti-map"></i>Mapa
+  </div>
   <div class="nav-item" id="nav-lotes" onclick="goTab('lotes')">
     <i class="ti ti-clipboard-list"></i>Lotes
   </div>
@@ -1870,6 +2621,76 @@ select option{background:var(--bg2)}
 </nav>
 
 <!-- ══ VINCULAR ══ -->
+<main class="screen" id="screen-mapa">
+  <div class="pg-titulo">Mapa</div>
+  <div class="pg-sub" id="mapaSubtitulo">Armazém 3 — posições em tempo real</div>
+
+  <!-- Legenda -->
+  <div class="mapa-legenda">
+    <div class="legenda-item"><div class="legenda-cor" style="background:var(--bg4)"></div><span>Vazio</span></div>
+    <div class="legenda-item"><div class="legenda-cor" style="background:#34d399"></div><span>Em estoque</span></div>
+    <div class="legenda-item"><div class="legenda-cor" style="background:#4f8ef7"></div><span>Parcial</span></div>
+    <div class="legenda-item"><div class="legenda-cor" style="background:#fbbf24"></div><span>Aguard. tag</span></div>
+  </div>
+
+  <!-- Mapa Armazém 3 -->
+  <div class="mapa-container" id="mapaArmazem3">
+
+    <!-- Lado de cima: B11 → B21 (esquerda para direita) -->
+    <div class="mapa-label-lado">Lado A — B11 a B21</div>
+    <div class="mapa-grade" id="gradeCima"></div>
+
+    <!-- Corredor -->
+    <div class="mapa-corredor">
+      <i class="ti ti-arrow-left"></i>
+      CORREDOR
+      <i class="ti ti-arrow-right"></i>
+    </div>
+
+    <!-- Lado de baixo: B10 → B1 (direita para esquerda) -->
+    <div class="mapa-label-lado">Lado B — B10 a B1</div>
+    <div class="mapa-grade" id="gradeBaixo"></div>
+
+    <!-- Entrada -->
+    <div class="mapa-entrada">
+      <i class="ti ti-door-enter"></i> ENTRADA
+    </div>
+
+  </div>
+
+  <button class="btn btn-cinza" style="margin-top:4px" onclick="carregarMapa()">
+    <i class="ti ti-refresh"></i> Atualizar mapa
+  </button>
+
+  <!-- Modal posição -->
+  <div id="modalPosicao" style="display:none" class="modal-posicao">
+    <div class="modal-posicao-inner">
+      <div class="modal-posicao-header">
+        <div class="modal-posicao-titulo" id="modalTitulo">A3B01</div>
+        <button onclick="fecharModal()" class="modal-fechar"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="modal-posicao-kpis">
+        <div class="kpi">
+          <div class="kpi-val" id="modalTotal" style="color:var(--azul)">0</div>
+          <div class="kpi-lbl">Total</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val" id="modalOcupado" style="color:var(--verde)">0</div>
+          <div class="kpi-lbl">Ocupados</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val" id="modalLivre" style="color:var(--texto2)">0</div>
+          <div class="kpi-lbl">Livres</div>
+        </div>
+      </div>
+      <div id="modalBags" class="modal-bags-lista"></div>
+      <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:8px">
+        <i class="ti ti-x"></i> Fechar
+      </button>
+    </div>
+  </div>
+</main>
+
 <main class="screen" id="screen-lotes">
   <div class="pg-titulo">Lotes</div>
   <div class="pg-sub">Crie lotes e gerencie as tags de cada bag</div>
@@ -1919,8 +2740,37 @@ select option{background:var(--bg2)}
       <input id="ltProdutor" type="text" placeholder="Nome do produtor"/>
     </div>
     <div class="campo">
-      <label>Localização inicial</label>
-      <input id="ltLocalizacao" type="text" placeholder="Ex: A3B10"/>
+      <label>Localização no armazém</label>
+      <select id="ltLocalizacao" onchange="atualizarInfoPosicao()">
+        <option value="">Selecione a posição...</option>
+        <optgroup label="Lado A — B11 a B21">
+          <option value="A3B11">B11</option>
+          <option value="A3B12">B12</option>
+          <option value="A3B13">B13</option>
+          <option value="A3B14">B14</option>
+          <option value="A3B15">B15</option>
+          <option value="A3B16">B16</option>
+          <option value="A3B17">B17</option>
+          <option value="A3B18">B18</option>
+          <option value="A3B19">B19</option>
+          <option value="A3B20">B20</option>
+          <option value="A3B21">B21</option>
+        </optgroup>
+        <optgroup label="Lado B — B1 a B10">
+          <option value="A3B1">B1</option>
+          <option value="A3B2">B2</option>
+          <option value="A3B3">B3</option>
+          <option value="A3B4">B4</option>
+          <option value="A3B5">B5</option>
+          <option value="A3B6">B6</option>
+          <option value="A3B7">B7</option>
+          <option value="A3B8">B8</option>
+          <option value="A3B9">B9</option>
+          <option value="A3B10">B10</option>
+        </optgroup>
+        <option value="transito">Em trânsito / sem posição</option>
+      </select>
+      <div id="ltLocInfo" style="font-size:12px;color:var(--texto3);margin-top:5px;font-family:'IBM Plex Mono',monospace"></div>
     </div>
     <button class="btn btn-azul" onclick="criarLote()">
       <i class="ti ti-clipboard-plus"></i> Criar lote e gerar bags
