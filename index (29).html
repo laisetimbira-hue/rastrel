@@ -2,671 +2,809 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<meta name="theme-color" content="#0f172a"/>
-<title>SeedBase RFID — Piloto</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="theme-color" content="#0b1120"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<title>SeedBase RFID</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"/>
 
-<!-- Firebase v10 -->
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import {
-  getFirestore, collection, doc, addDoc, setDoc, getDoc, getDocs,
-  query, where, orderBy, limit, updateDoc, serverTimestamp
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script>
+const initializeApp = (cfg, name) => firebase.apps.find(a=>a.name===name) || firebase.initializeApp(cfg, name);
+const getFirestore  = (app) => app.firestore();
+const collection    = (db, path) => db.collection(path);
+const doc           = (db, path, id) => db.collection(path).doc(id);
+const addDoc        = (ref, data) => ref.add(data);
+const getDocs       = (q) => q.get();
+const updateDoc     = (ref, data) => ref.update(data);
+const serverTimestamp = () => firebase.firestore.FieldValue.serverTimestamp();
+function query(ref, ...fns){ let q=ref; for(const f of fns) q=f(q); return q; }
+function where(field,op,val){ return q=>q.where(field,op,val); }
+function orderBy(field,dir='asc'){ return q=>q.orderBy(field,dir); }
+function limit(n){ return q=>q.limit(n); }
 
-// ══════════════════════════════════════════
-// CONFIGURAÇÃO FIREBASE
-// Cole aqui os dados do seu projeto Firebase
-// Ou configure pela aba ⚙️ Config no app
-// ══════════════════════════════════════════
-let firebaseConfig = null;
-let app = null;
 let db = null;
 
-// Cultivares padrão SeedBase 25/26
-const CULTIVARES_PADRAO = [
-  { id: 'zeus',    nome: '55I57RSF IPRO',  fantasia: 'Zeus',    tech: 'Intacta RR2 Pro' },
-  { id: 'grafeno', nome: '57K56RSF CE',    fantasia: 'Grafeno', tech: 'Conkesta E3' },
-  { id: 'raca',    nome: '63E66RSF E',     fantasia: 'Raça',    tech: 'Enlist E3' },
-  { id: 'c2530',   nome: 'C2530CE',        fantasia: 'C2530',   tech: 'Conkesta E3' },
-  { id: 'c2645',   nome: 'C2645CE',        fantasia: 'C2645',   tech: 'Conkesta E3' },
+const CULTIVARES = [
+  { id:'zeus',    nome:'55I57RSF IPRO', fantasia:'Zeus',    tech:'Intacta RR2 Pro' },
+  { id:'grafeno', nome:'57K56RSF CE',   fantasia:'Grafeno', tech:'Conkesta E3'     },
+  { id:'raca',    nome:'63E66RSF E',    fantasia:'Raça',    tech:'Enlist E3'       },
+  { id:'c2530',   nome:'C2530CE',       fantasia:'C2530',   tech:'Conkesta E3'     },
+  { id:'c2645',   nome:'C2645CE',       fantasia:'C2645',   tech:'Conkesta E3'     },
 ];
-
-const EVENTO_LABEL = {
-  vinculacao:          '🏷️ Vinculação de tag',
-  entrada_armazem:     '📥 Entrada armazém',
-  movimentacao_interna:'↔️ Movimentação interna',
-  saida_expedicao:     '🚛 Saída / expedição',
-  conferencia_carga:   '🔍 Conferência de carga',
-  alerta:              '⚠️ Alerta',
+const EV_LABEL = {
+  vinculacao:'Vinculação de tag', entrada_armazem:'Entrada armazém',
+  movimentacao_interna:'Movimentação interna', saida_expedicao:'Saída / expedição',
+  conferencia_carga:'Conferência de carga', alerta:'Alerta',
 };
-const EVENTO_COR = {
-  vinculacao:'#3b82f6', entrada_armazem:'#22c55e',
-  movimentacao_interna:'#f59e0b', saida_expedicao:'#a855f7',
-  conferencia_carga:'#06b6d4', alerta:'#ef4444',
+const EV_COR = {
+  vinculacao:'#4f8ef7', entrada_armazem:'#34d399',
+  movimentacao_interna:'#fbbf24', saida_expedicao:'#a78bfa',
+  conferencia_carga:'#22d3ee', alerta:'#f87171',
 };
 
-// Estado global
-let pedidoAtivo = null;
-let cargaLidos  = [];
-let cargaDivs   = [];
-let epcTimer    = null;
+let pedidoAtivo=null, cargaLidos=[], cargaDivs=[], epcTimer=null;
 
-// ──────────────────────────────────────────
-// INIT
-// ──────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  carregarCamposConfig();
-  tentarConectar();
   preencherCultivares();
+  carregarCfgForm();
+  tentarConectar();
 });
 
-function tentarConectar() {
-  const cfg = localStorage.getItem('fb_config');
-  if (!cfg) { setConn(false, 'Não configurado'); showBanner(true); return; }
-  try {
-    firebaseConfig = JSON.parse(cfg);
-    app = initializeApp(firebaseConfig, 'seedbase-rfid');
-    db  = getFirestore(app);
-    testarConexao();
-  } catch(e) {
-    setConn(false, 'Erro na config');
-    showBanner(true);
-  }
-}
+// ── CONFIG FIREBASE EMBUTIDA ──
+const FIREBASE_CONFIG_DEFAULT = {
+  apiKey: "AIzaSyC_1suDbjnnySBqsG8XBsHTlqjA8XBsrS8",
+  authDomain: "rastreabilidade-a511a.firebaseapp.com",
+  projectId: "rastreabilidade-a511a",
+  storageBucket: "rastreabilidade-a511a.firebasestorage.app",
+  messagingSenderId: "580280416030",
+  appId: "1:580280416030:web:7eeed32f444611d7247b0f"
+};
 
+function tentarConectar() {
+  const cfgSalva = localStorage.getItem('fb_config');
+  const cfg = cfgSalva ? JSON.parse(cfgSalva) : FIREBASE_CONFIG_DEFAULT;
+  // Salva automaticamente se ainda não estava salvo
+  if (!cfgSalva) {
+    localStorage.setItem('fb_config', JSON.stringify(FIREBASE_CONFIG_DEFAULT));
+    // Preenche campos de config
+    setTimeout(() => {
+      const k = document.getElementById('cfgApiKey');
+      const p = document.getElementById('cfgProjectId');
+      if (k) k.value = FIREBASE_CONFIG_DEFAULT.apiKey;
+      if (p) p.value = FIREBASE_CONFIG_DEFAULT.projectId;
+    }, 500);
+  }
+  try {
+    const app = initializeApp(cfg,'seedbase-rfid');
+    db = getFirestore(app);
+    testarConexao();
+  } catch(e) { setStatus(false,'Erro na config'); showBanner(true); }
+}
 async function testarConexao() {
   try {
-    await getDocs(query(collection(db, 'bags'), limit(1)));
-    setConn(true, 'Conectado');
-    showBanner(false);
-  } catch(e) {
-    setConn(false, 'Erro Firebase');
-    showBanner(true);
-  }
+    await getDocs(query(collection(db,'bags'),limit(1)));
+    setStatus(true,'Conectado'); showBanner(false);
+  } catch(e) { setStatus(false,'Erro Firebase'); showBanner(true); }
 }
-
-function setConn(ok, label) {
-  document.getElementById('connDot').className = 'conn-dot ' + (ok ? 'ok' : 'err');
-  document.getElementById('connLabel').textContent = label;
+function setStatus(ok,txt) {
+  g('connDot').className='conn-dot '+(ok?'ok':'err');
+  g('connTxt').textContent=txt;
 }
-function showBanner(show) {
-  document.getElementById('setupBanner').style.display = show ? 'block' : 'none';
-}
+function showBanner(v){ g('banner').style.display=v?'flex':'none'; }
 
-// ──────────────────────────────────────────
-// CONFIG
-// ──────────────────────────────────────────
-window.salvarConfig = function() {
-  const apiKey     = document.getElementById('cfgApiKey').value.trim();
-  const projectId  = document.getElementById('cfgProjectId').value.trim();
-  const appId      = document.getElementById('cfgAppId').value.trim();
-  if (!apiKey || !projectId) { flash('Preencha API Key e Project ID', 'err'); return; }
-  const cfg = {
-    apiKey,
-    authDomain:  projectId + '.firebaseapp.com',
-    projectId,
-    storageBucket: projectId + '.appspot.com',
-    appId: appId || undefined,
-  };
-  localStorage.setItem('fb_config', JSON.stringify(cfg));
-  flash('Salvando...', 'ok');
-  setTimeout(() => location.reload(), 800);
+function salvarConfig() {
+  const k=g('cfgApiKey').value.trim(), p=g('cfgProjectId').value.trim();
+  if(!k||!p){ flash('Preencha API Key e Project ID','err'); return; }
+  localStorage.setItem('fb_config',JSON.stringify({
+    apiKey:k, authDomain:p+'.firebaseapp.com',
+    projectId:p, storageBucket:p+'.appspot.com',
+  }));
+  flash('Salvando...','ok');
+  setTimeout(()=>location.reload(),800);
 };
-
-window.salvarOperador = function() {
-  localStorage.setItem('operador',   document.getElementById('cfgOperador').value.trim());
-  localStorage.setItem('dispositivo',document.getElementById('cfgDispositivo').value.trim());
-  flash('Operador salvo!', 'ok');
+function salvarOperador() {
+  localStorage.setItem('operador',g('cfgOp').value.trim());
+  localStorage.setItem('dispositivo',g('cfgDev').value.trim());
+  flash('Salvo!','ok');
 };
-
-window.limparConfig = function() {
-  if (!confirm('Limpar toda a configuração local?')) return;
-  localStorage.clear();
-  location.reload();
+function limparConfig() {
+  if(!confirm('Limpar configuração?')) return;
+  localStorage.clear(); location.reload();
 };
-
-function carregarCamposConfig() {
-  const cfg = localStorage.getItem('fb_config');
-  if (cfg) {
-    const c = JSON.parse(cfg);
-    document.getElementById('cfgApiKey').value    = c.apiKey    || '';
-    document.getElementById('cfgProjectId').value = c.projectId || '';
-    document.getElementById('cfgAppId').value     = c.appId     || '';
-  }
-  document.getElementById('cfgOperador').value    = localStorage.getItem('operador')    || '';
-  document.getElementById('cfgDispositivo').value = localStorage.getItem('dispositivo') || '';
+function carregarCfgForm() {
+  const cfg=localStorage.getItem('fb_config');
+  if(cfg){ const c=JSON.parse(cfg); g('cfgApiKey').value=c.apiKey||''; g('cfgProjectId').value=c.projectId||''; }
+  g('cfgOp').value=localStorage.getItem('operador')||'';
+  g('cfgDev').value=localStorage.getItem('dispositivo')||'';
 }
 
 function preencherCultivares() {
-  const saved = localStorage.getItem('cultivares_extra');
-  const extras = saved ? JSON.parse(saved) : [];
-  const todos = [...CULTIVARES_PADRAO, ...extras];
-  const sel = document.getElementById('cultivarSelect');
-  sel.innerHTML = '<option value="">Selecione...</option>' +
-    todos.map(c => `<option value="${c.id}">${c.nome}${c.fantasia?' — '+c.fantasia:''}</option>`).join('');
+  g('cultivarSelect').innerHTML='<option value="">Selecione a cultivar...</option>'+
+    CULTIVARES.map(c=>`<option value="${c.id}">${c.nome}${c.fantasia?' — '+c.fantasia:''}</option>`).join('');
 }
-
 function getCultivarNome(id) {
-  const saved = localStorage.getItem('cultivares_extra');
-  const extras = saved ? JSON.parse(saved) : [];
-  const todos = [...CULTIVARES_PADRAO, ...extras];
-  const c = todos.find(x => x.id === id);
-  return c ? c.nome + (c.fantasia ? ' — ' + c.fantasia : '') : id;
+  const c=CULTIVARES.find(x=>x.id===id);
+  return c?c.nome+(c.fantasia?' — '+c.fantasia:''):id;
 }
 
-// ──────────────────────────────────────────
-// NAVEGAÇÃO
-// ──────────────────────────────────────────
-window.goTab = function(name) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('screen-' + name).classList.add('active');
-  const tabs = ['vincular','conferir','buscar','dashboard','config'];
-  document.querySelectorAll('.tab')[tabs.indexOf(name)].classList.add('active');
-  if (name === 'dashboard') carregarDashboard();
+function goTab(name) {
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(t=>t.classList.remove('active'));
+  g('screen-'+name).classList.add('active');
+  g('nav-'+name).classList.add('active');
+  if(name==='dashboard') carregarDashboard();
+  window.scrollTo(0,0);
 };
 
-// ──────────────────────────────────────────
-// LEITURA EPC (modo HID teclado)
-// ──────────────────────────────────────────
-window.onEpcInput = function(val) {
+function onEpcInput(val) {
   clearTimeout(epcTimer);
-  const st = document.getElementById('epcStatus');
-  if (!val) { st.textContent = ''; return; }
-  st.textContent = '⏳ Aguardando leitura completa...';
-  st.style.color = 'var(--text3)';
-  epcTimer = setTimeout(() => {
-    const epc = val.trim().replace(/[\n\r]/g, '');
-    if (epc.length >= 4) {
-      document.getElementById('epcInput').value = epc;
-      st.textContent = '✅ EPC: ' + epc;
-      st.style.color = 'var(--green)';
-      document.getElementById('numeroBag').focus();
+  const st=g('epcStatus');
+  if(!val){ st.textContent=''; return; }
+  st.textContent='Aguardando...';
+  epcTimer=setTimeout(()=>{
+    const epc=val.trim().replace(/[\n\r]/g,'');
+    if(epc.length>=4){
+      g('epcInput').value=epc;
+      st.innerHTML='<span class="ok-text"><i class="ti ti-check"></i> EPC: '+epc+'</span>';
+      g('numeroBag').focus();
     }
-  }, 400);
+  },400);
 };
-
-window.onEpcCarga = function(val) {
+function onEpcCarga(val) {
   clearTimeout(epcTimer);
-  epcTimer = setTimeout(async () => {
-    const epc = val.trim().replace(/[\n\r]/g, '');
-    if (epc.length >= 4 && pedidoAtivo) {
-      document.getElementById('epcCarga').value = '';
-      await registrarBagNaCarga(epc);
-    }
-  }, 400);
+  epcTimer=setTimeout(async()=>{
+    const epc=val.trim().replace(/[\n\r]/g,'');
+    if(epc.length>=4&&pedidoAtivo){ g('epcCarga').value=''; await registrarBagNaCarga(epc); }
+  },400);
+};
+function clearField(id) {
+  g(id).value='';
+  if(id==='epcInput') g('epcStatus').textContent='';
+  g(id).focus();
 };
 
-window.clearEpc = function(fieldId) {
-  document.getElementById(fieldId || 'epcInput').value = '';
-  if (fieldId === 'epcInput' || !fieldId) {
-    document.getElementById('epcStatus').textContent = '';
-  }
-  document.getElementById(fieldId || 'epcInput').focus();
-};
-
-// ──────────────────────────────────────────
-// VINCULAR BAG
-// ──────────────────────────────────────────
-window.vincularBag = async function() {
-  if (!db) { flash('Configure o Firebase primeiro (aba ⚙️)', 'err'); return; }
-
-  const epc       = document.getElementById('epcInput').value.trim();
-  const numero    = document.getElementById('numeroBag').value.trim().toUpperCase();
-  const cultivarId= document.getElementById('cultivarSelect').value;
-
-  if (!epc)       { flash('Leia a tag RFID primeiro', 'err'); return; }
-  if (!numero)    { flash('Informe o número do bag', 'err'); return; }
-  if (!cultivarId){ flash('Selecione a cultivar', 'err'); return; }
-
-  const operador   = localStorage.getItem('operador')    || 'Operador';
-  const dispositivo= localStorage.getItem('dispositivo') || 'App';
-
-  // Verificar EPC duplicado
-  const snap = await getDocs(query(collection(db,'bags'), where('epc','==',epc)));
-  if (!snap.empty) {
-    const b = snap.docs[0].data();
-    flash(`Tag já vinculada ao bag ${b.numero_bag}`, 'warn');
-    return;
-  }
-
-  const loc = document.getElementById('localizacao').value.trim() || 'Armazém SCV';
-
-  const bagData = {
-    epc,
-    numero_bag:   numero,
-    cultivar_id:  cultivarId,
-    cultivar_nome: getCultivarNome(cultivarId),
-    categoria:    document.getElementById('categoriaSelect').value,
-    peneira:      document.getElementById('peneira').value.trim(),
-    tratamento:   document.getElementById('tratamento').value.trim(),
-    peso_kg:      parseFloat(document.getElementById('peso').value) || null,
-    produtor:     document.getElementById('produtor').value.trim(),
-    localizacao_atual: loc,
-    status:       'em_estoque',
-    criado_em:    serverTimestamp(),
-    atualizado_em: serverTimestamp(),
-  };
-
-  // Salvar bag
-  const bagRef = await addDoc(collection(db, 'bags'), bagData);
-
-  // Registrar movimentação
-  await addDoc(collection(db, 'movimentacoes'), {
-    bag_id:     bagRef.id,
-    numero_bag: numero,
-    tipo_evento:'vinculacao',
-    local_destino: loc,
-    observacao: `Bag ${numero} vinculado — EPC ${epc}`,
-    operador,
-    dispositivo,
-    criado_em:  serverTimestamp(),
+async function vincularBag() {
+  if(!db){ flash('Configure o Firebase primeiro','err'); return; }
+  const epc=g('epcInput').value.trim();
+  const numero=g('numeroBag').value.trim().toUpperCase();
+  const cultivarId=g('cultivarSelect').value;
+  if(!epc){ flash('Leia a tag RFID primeiro','err'); return; }
+  if(!numero){ flash('Informe o número do bag','err'); return; }
+  if(!cultivarId){ flash('Selecione a cultivar','err'); return; }
+  const op=localStorage.getItem('operador')||'Operador';
+  const dev=localStorage.getItem('dispositivo')||'App';
+  const snap=await getDocs(query(collection(db,'bags'),where('epc','==',epc)));
+  if(!snap.empty){ flash('Tag já vinculada ao bag '+snap.docs[0].data().numero_bag,'warn'); return; }
+  const loc=g('localizacao').value.trim()||'Armazém';
+  const ref=await addDoc(collection(db,'bags'),{
+    epc, numero_bag:numero, cultivar_id:cultivarId,
+    cultivar_nome:getCultivarNome(cultivarId),
+    categoria:g('categoriaSelect').value,
+    peneira:g('peneira').value.trim(),
+    tratamento:g('tratamento').value.trim(),
+    peso_kg:parseFloat(g('peso').value)||null,
+    produtor:g('produtor').value.trim(),
+    localizacao_atual:loc, status:'em_estoque',
+    criado_em:serverTimestamp(), atualizado_em:serverTimestamp(),
   });
-
-  flash(`✅ Bag ${numero} vinculado!`, 'ok');
-  limparFormVincular();
-};
-
-function limparFormVincular() {
-  ['epcInput','numeroBag','peneira','tratamento','peso','localizacao','produtor'].forEach(id => {
-    document.getElementById(id).value = '';
+  await addDoc(collection(db,'movimentacoes'),{
+    bag_id:ref.id, numero_bag:numero, tipo_evento:'vinculacao',
+    local_destino:loc, observacao:`Bag ${numero} vinculado — EPC ${epc}`,
+    operador:op, dispositivo:dev, criado_em:serverTimestamp(),
   });
-  document.getElementById('epcStatus').textContent = '';
-  document.getElementById('cultivarSelect').value = '';
-  document.getElementById('categoriaSelect').value = 'C1';
-  document.getElementById('epcInput').focus();
+  flash('Bag '+numero+' vinculado!','ok');
+  limparVincular();
+};
+function limparVincular() {
+  ['epcInput','numeroBag','peneira','tratamento','peso','localizacao','produtor'].forEach(id=>g(id).value='');
+  g('epcStatus').textContent='';
+  g('cultivarSelect').value='';
+  g('categoriaSelect').value='C1';
+  g('epcInput').focus();
 }
 
-// ──────────────────────────────────────────
-// CONFERÊNCIA DE CARGA
-// ──────────────────────────────────────────
-window.criarPedido = async function() {
-  if (!db) { flash('Configure o Firebase primeiro', 'err'); return; }
-  const num = document.getElementById('numPedido').value.trim();
-  if (!num) { flash('Informe o número do pedido', 'err'); return; }
-
-  const ref = await addDoc(collection(db, 'pedidos_carga'), {
-    numero_pedido:  num,
-    placa_veiculo:  document.getElementById('placa').value.trim(),
-    motorista:      document.getElementById('motorista').value.trim(),
-    status:         'conferindo',
-    criado_em:      serverTimestamp(),
+async function criarPedido() {
+  if(!db){ flash('Configure o Firebase primeiro','err'); return; }
+  const num=g('numPedido').value.trim();
+  if(!num){ flash('Informe o número do pedido','err'); return; }
+  const ref=await addDoc(collection(db,'pedidos_carga'),{
+    numero_pedido:num, placa_veiculo:g('placa').value.trim(),
+    motorista:g('motorista').value.trim(), status:'conferindo',
+    criado_em:serverTimestamp(),
   });
-
-  pedidoAtivo = { id: ref.id, numero: num };
-  cargaLidos  = [];
-  cargaDivs   = [];
-  atualizarKpisCarga();
-
-  document.getElementById('conferenciaPainel').style.display = 'block';
-  document.getElementById('epcCarga').focus();
-  flash(`Pedido ${num} iniciado!`, 'ok');
+  pedidoAtivo={id:ref.id,numero:num};
+  cargaLidos=[]; cargaDivs=[];
+  atualizarKpis(); renderLidos();
+  g('pedidoInfo').textContent=num+(g('placa').value?' · '+g('placa').value:'');
+  g('conferenciaPainel').style.display='block';
+  g('pedidoForm').style.display='none';
+  g('epcCarga').focus();
+  flash('Pedido iniciado','ok');
 };
-
 async function registrarBagNaCarga(epc) {
-  // Buscar bag pelo EPC
-  const snap = await getDocs(query(collection(db,'bags'), where('epc','==',epc)));
-  const operador    = localStorage.getItem('operador')    || 'Operador';
-  const dispositivo = localStorage.getItem('dispositivo') || 'App';
-
-  if (snap.empty) {
-    if (!cargaDivs.find(d => d.epc === epc)) {
-      cargaDivs.push({ epc, motivo: 'Tag não cadastrada' });
-    }
-    atualizarKpisCarga();
-    renderDivergencias();
-    flash(`⚠️ Tag ${epc} não cadastrada!`, 'warn');
-    return;
+  const snap=await getDocs(query(collection(db,'bags'),where('epc','==',epc)));
+  const op=localStorage.getItem('operador')||'Operador';
+  const dev=localStorage.getItem('dispositivo')||'App';
+  if(snap.empty){
+    if(!cargaDivs.find(d=>d.epc===epc)) cargaDivs.push({epc,motivo:'Tag não cadastrada'});
+    atualizarKpis(); renderDivs();
+    flash('Tag não cadastrada: '+epc,'warn'); return;
   }
-
-  const bagDoc  = snap.docs[0];
-  const bagData = bagDoc.data();
-
-  if (cargaLidos.find(b => b.epc === epc)) {
-    flash('Tag já lida nesta carga', 'warn');
-    return;
-  }
-
-  // Registrar movimentação
-  await addDoc(collection(db,'movimentacoes'), {
-    bag_id:      bagDoc.id,
-    numero_bag:  bagData.numero_bag,
-    tipo_evento: 'conferencia_carga',
-    observacao:  `Lido na carga — pedido ${pedidoAtivo.numero}`,
-    operador,
-    dispositivo,
-    criado_em:   serverTimestamp(),
+  const bagDoc=snap.docs[0], bag=bagDoc.data();
+  if(cargaLidos.find(b=>b.epc===epc)){ flash('Tag já lida','warn'); return; }
+  await addDoc(collection(db,'movimentacoes'),{
+    bag_id:bagDoc.id, numero_bag:bag.numero_bag, tipo_evento:'conferencia_carga',
+    observacao:`Carga — pedido ${pedidoAtivo.numero}`, operador:op, dispositivo:dev,
+    criado_em:serverTimestamp(),
   });
-
-  // Adicionar ao pedido
-  await addDoc(collection(db, `pedidos_carga/${pedidoAtivo.id}/itens`), {
-    bag_id:           bagDoc.id,
-    numero_bag:       bagData.numero_bag,
-    epc,
-    status_validacao: 'lido',
-    criado_em:        serverTimestamp(),
+  await db.collection('pedidos_carga').doc(pedidoAtivo.id).collection('itens').add({
+    bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc, status_validacao:'lido',
+    criado_em:serverTimestamp(),
   });
-
-  cargaLidos.push({
-    epc,
-    numero:   bagData.numero_bag,
-    cultivar: bagData.cultivar_nome || '—',
-  });
-
-  atualizarKpisCarga();
-  renderLidos();
-  flash(`✅ ${bagData.numero_bag} — ${bagData.cultivar_nome || ''}`, 'ok');
+  cargaLidos.push({epc,numero:bag.numero_bag,cultivar:bag.cultivar_nome||'—'});
+  atualizarKpis(); renderLidos();
+  flash(bag.numero_bag+' — '+(bag.cultivar_nome||''),'ok');
 }
-
-function atualizarKpisCarga() {
-  document.getElementById('carga-lidos').textContent = cargaLidos.length;
-  document.getElementById('carga-ok').textContent    = cargaLidos.length - cargaDivs.length;
-  document.getElementById('carga-div').textContent   = cargaDivs.length;
+function atualizarKpis(){
+  g('kLidos').textContent=cargaLidos.length;
+  g('kOk').textContent=cargaLidos.length-cargaDivs.length;
+  g('kDiv').textContent=cargaDivs.length;
 }
-
-function renderLidos() {
-  const el = document.getElementById('carga-lidos-lista');
-  if (!cargaLidos.length) { el.innerHTML = '<p style="color:var(--text2);font-size:13px">Nenhum bag lido ainda.</p>'; return; }
-  el.innerHTML = cargaLidos.map(b => `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">
-      <span style="font-weight:600">${b.numero}</span>
-      <span style="color:var(--text2)">${b.cultivar}</span>
-      <span class="badge badge-green">OK</span>
+function renderLidos(){
+  const el=g('cargaLidosList');
+  if(!cargaLidos.length){ el.innerHTML='<p class="vazio">Nenhum bag lido ainda.</p>'; return; }
+  el.innerHTML=cargaLidos.map(b=>`
+    <div class="linha-item">
+      <div><span class="item-num">${b.numero}</span><span class="item-sub">${b.cultivar}</span></div>
+      <span class="tag tag-verde">OK</span>
     </div>`).join('');
 }
-
-function renderDivergencias() {
-  const wrap = document.getElementById('carga-lista-div');
-  if (!cargaDivs.length) { wrap.style.display='none'; return; }
-  wrap.style.display = 'block';
-  document.getElementById('carga-divs').innerHTML = cargaDivs.map(d => `
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">
-      <span style="font-family:monospace;color:var(--red)">${d.epc}</span>
-      <span style="color:var(--text2)">${d.motivo}</span>
+function renderDivs(){
+  const wrap=g('divWrap');
+  if(!cargaDivs.length){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  g('divList').innerHTML=cargaDivs.map(d=>`
+    <div class="linha-item">
+      <div><span class="item-num mono" style="color:var(--vermelho)">${d.epc}</span><span class="item-sub">${d.motivo}</span></div>
+      <span class="tag tag-vermelho">Erro</span>
     </div>`).join('');
 }
-
-window.confirmarExpedicao = async function() {
-  if (!pedidoAtivo) return;
-  if (!cargaLidos.length) { flash('Nenhum bag lido', 'err'); return; }
-  if (!confirm(`Confirmar expedição de ${cargaLidos.length} bag(s)?`)) return;
-
-  const operador    = localStorage.getItem('operador')    || 'Operador';
-  const dispositivo = localStorage.getItem('dispositivo') || 'App';
-
-  for (const b of cargaLidos) {
-    const snap = await getDocs(query(collection(db,'bags'), where('epc','==',b.epc)));
-    if (snap.empty) continue;
-    const bagRef = snap.docs[0].ref;
-    await updateDoc(bagRef, { status:'expedido', atualizado_em: serverTimestamp() });
-    await addDoc(collection(db,'movimentacoes'), {
-      bag_id:      snap.docs[0].id,
-      numero_bag:  b.numero,
-      tipo_evento: 'saida_expedicao',
-      observacao:  `Expedido — pedido ${pedidoAtivo.numero}`,
-      operador,
-      dispositivo,
-      criado_em:   serverTimestamp(),
+async function confirmarExpedicao() {
+  if(!pedidoAtivo||!cargaLidos.length){ flash('Nenhum bag lido','err'); return; }
+  if(!confirm(`Confirmar expedição de ${cargaLidos.length} bag(s)?`)) return;
+  const op=localStorage.getItem('operador')||'Operador';
+  const dev=localStorage.getItem('dispositivo')||'App';
+  for(const b of cargaLidos){
+    const snap=await getDocs(query(collection(db,'bags'),where('epc','==',b.epc)));
+    if(snap.empty) continue;
+    await updateDoc(snap.docs[0].ref,{status:'expedido',atualizado_em:serverTimestamp()});
+    await addDoc(collection(db,'movimentacoes'),{
+      bag_id:snap.docs[0].id, numero_bag:b.numero, tipo_evento:'saida_expedicao',
+      observacao:`Expedido — pedido ${pedidoAtivo.numero}`,
+      operador:op, dispositivo:dev, criado_em:serverTimestamp(),
     });
   }
-
-  await updateDoc(doc(db,'pedidos_carga', pedidoAtivo.id), {
-    status: cargaDivs.length > 0 ? 'divergencia' : 'expedido',
-    atualizado_em: serverTimestamp(),
+  await updateDoc(db.collection('pedidos_carga').doc(pedidoAtivo.id),{
+    status:cargaDivs.length>0?'divergencia':'expedido',
+    atualizado_em:serverTimestamp(),
   });
-
-  flash(`✅ ${cargaLidos.length} bags expedidos!`, 'ok');
+  flash(cargaLidos.length+' bags expedidos!','ok');
   window.cancelarPedido();
 };
-
-window.cancelarPedido = function() {
-  pedidoAtivo = null;
-  cargaLidos  = [];
-  cargaDivs   = [];
-  document.getElementById('conferenciaPainel').style.display = 'none';
-  ['numPedido','placa','motorista'].forEach(id => document.getElementById(id).value='');
-  atualizarKpisCarga();
+function cancelarPedido() {
+  pedidoAtivo=null; cargaLidos=[]; cargaDivs=[];
+  g('conferenciaPainel').style.display='none';
+  g('pedidoForm').style.display='block';
+  ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
+  atualizarKpis();
 };
 
-// ──────────────────────────────────────────
-// BUSCAR BAG
-// ──────────────────────────────────────────
-window.buscarBag = async function() {
-  if (!db) { flash('Configure o Firebase primeiro', 'err'); return; }
-  const q = document.getElementById('buscaEpc').value.trim().toUpperCase();
-  if (!q) { flash('Digite ou leia um EPC / número', 'err'); return; }
-
-  const el = document.getElementById('buscaResultado');
-  el.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px 0">🔍 Buscando...</p>';
-
-  // Busca por EPC
-  let snap = await getDocs(query(collection(db,'bags'), where('epc','==',q)));
-  // Se não achou, busca por número do bag
-  if (snap.empty) {
-    snap = await getDocs(query(collection(db,'bags'), where('numero_bag','==',q)));
-  }
-  if (snap.empty) {
-    el.innerHTML = '<p style="color:var(--red);font-size:13px;padding:12px 0">❌ Bag não encontrado.</p>';
-    return;
-  }
-
-  const bagDoc  = snap.docs[0];
-  const bag     = bagDoc.data();
-
-  // Histórico
-  const movSnap = await getDocs(
-    query(collection(db,'movimentacoes'),
-      where('bag_id','==', bagDoc.id),
-      orderBy('criado_em','desc'),
-      limit(10))
-  );
-
-  const statusBadge = {
-    em_estoque: '<span class="badge badge-green">Em estoque</span>',
-    expedido:   '<span class="badge badge-amber">Expedido</span>',
-    perdido:    '<span class="badge badge-red">Perdido</span>',
-  }[bag.status] || `<span class="badge badge-gray">${bag.status}</span>`;
-
-  el.innerHTML = `
-    <div class="result-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <span style="font-size:17px;font-weight:700">${bag.numero_bag}</span>
-        ${statusBadge}
+async function buscarBag() {
+  if(!db){ flash('Configure o Firebase primeiro','err'); return; }
+  const q=g('buscaInput').value.trim().toUpperCase();
+  if(!q){ flash('Digite um EPC ou número de bag','err'); return; }
+  const el=g('buscaResult');
+  el.innerHTML='<p class="vazio">Buscando...</p>';
+  let snap=await getDocs(query(collection(db,'bags'),where('epc','==',q)));
+  if(snap.empty) snap=await getDocs(query(collection(db,'bags'),where('numero_bag','==',q)));
+  if(snap.empty){ el.innerHTML='<div class="estado-vazio"><i class="ti ti-package-off"></i><p>Bag não encontrado</p></div>'; return; }
+  const bagDoc=snap.docs[0], bag=bagDoc.data();
+  const movSnap=await getDocs(query(collection(db,'movimentacoes'),
+    where('bag_id','==',bagDoc.id),orderBy('criado_em','desc'),limit(8)));
+  const stCls={em_estoque:'tag-verde',expedido:'tag-amarelo',perdido:'tag-vermelho'};
+  const stTxt={em_estoque:'Em estoque',expedido:'Expedido',perdido:'Perdido'};
+  el.innerHTML=`
+    <div class="secao">
+      <div class="secao-topo">
+        <div>
+          <div class="bag-num">${bag.numero_bag}</div>
+          <div class="bag-epc mono">${bag.epc}</div>
+        </div>
+        <span class="tag ${stCls[bag.status]||'tag-cinza'}">${stTxt[bag.status]||bag.status||'—'}</span>
       </div>
-      ${row('EPC', `<span style="font-family:monospace;color:var(--blue)">${bag.epc}</span>`)}
-      ${row('Cultivar', bag.cultivar_nome || '—')}
-      ${row('Categoria', bag.categoria || '—')}
-      ${row('Peneira', bag.peneira || '—')}
-      ${row('Tratamento', bag.tratamento || '—')}
-      ${row('Peso', bag.peso_kg ? bag.peso_kg+' kg' : '—')}
-      ${row('Produtor', bag.produtor || '—')}
-      ${row('Localização', `<strong>${bag.localizacao_atual || '—'}</strong>`)}
+      <div class="detalhe-grid">
+        ${dr('Cultivar',bag.cultivar_nome||'—')}
+        ${dr('Categoria',bag.categoria||'—')}
+        ${dr('Peneira',bag.peneira||'—')}
+        ${dr('Tratamento',bag.tratamento||'—')}
+        ${dr('Peso',bag.peso_kg?bag.peso_kg+' kg':'—')}
+        ${dr('Produtor',bag.produtor||'—')}
+      </div>
+      <div class="loc-bar">
+        <span class="loc-label"><i class="ti ti-map-pin"></i> Localização atual</span>
+        <span class="loc-val">${bag.localizacao_atual||'—'}</span>
+      </div>
     </div>
-    <div class="card" style="margin-top:8px">
-      <div class="card-title">📋 Histórico</div>
-      ${movSnap.empty ? '<p style="color:var(--text3);font-size:13px">Sem movimentações.</p>' :
-        movSnap.docs.map(m => {
-          const mv = m.data();
-          return `<div class="mov-item">
-            <div class="mov-dot" style="background:${EVENTO_COR[mv.tipo_evento]||'#64748b'}"></div>
-            <div>
-              <div class="mov-event">${EVENTO_LABEL[mv.tipo_evento]||mv.tipo_evento}</div>
-              <div class="mov-meta">${fmtData(mv.criado_em)} · ${mv.operador||'—'} · ${mv.dispositivo||''}</div>
-              ${mv.observacao?`<div style="font-size:11px;color:var(--text3);margin-top:2px">${mv.observacao}</div>`:''}
+    <div class="secao-label">HISTÓRICO</div>
+    <div class="secao">
+      ${movSnap.empty?'<p class="vazio">Sem movimentações.</p>':
+        movSnap.docs.map(d=>{const m=d.data(); return `
+          <div class="tl-item">
+            <div class="tl-dot" style="background:${EV_COR[m.tipo_evento]||'#475569'}"></div>
+            <div class="tl-corpo">
+              <div class="tl-evento">${EV_LABEL[m.tipo_evento]||m.tipo_evento}</div>
+              <div class="tl-meta">${fmtData(m.criado_em)} · ${m.operador||'—'}</div>
+              ${m.observacao?`<div class="tl-obs">${m.observacao}</div>`:''}
             </div>
-          </div>`;
-        }).join('')
-      }
+          </div>`}).join('')}
     </div>`;
 };
+function dr(k,v){ return `<div class="dr"><span class="dr-k">${k}</span><span class="dr-v">${v}</span></div>`; }
 
-function row(k, v) {
-  return `<div class="result-row"><span class="result-key">${k}</span><span class="result-val">${v}</span></div>`;
-}
-
-// ──────────────────────────────────────────
-// DASHBOARD
-// ──────────────────────────────────────────
-window.carregarDashboard = async function() {
-  if (!db) return;
-
-  // Todos os bags
-  const bagsSnap = await getDocs(collection(db,'bags'));
-  const bags = bagsSnap.docs.map(d => ({ id:d.id, ...d.data() }));
-
-  const total    = bags.length;
-  const estoque  = bags.filter(b => b.status==='em_estoque').length;
-  const expedido = bags.filter(b => b.status==='expedido').length;
-
-  document.getElementById('kpi-total').textContent    = total;
-  document.getElementById('kpi-estoque').textContent  = estoque;
-  document.getElementById('kpi-expedido').textContent = expedido;
-
-  // Últimas movimentações
-  const movSnap = await getDocs(
-    query(collection(db,'movimentacoes'), orderBy('criado_em','desc'), limit(20))
-  );
-  const movEl = document.getElementById('movList');
-  if (movSnap.empty) {
-    movEl.innerHTML = '<p style="color:var(--text2);font-size:13px">Nenhuma movimentação ainda.</p>';
-  } else {
-    movEl.innerHTML = movSnap.docs.map(d => {
-      const m = d.data();
-      return `<div class="mov-item">
-        <div class="mov-dot" style="background:${EVENTO_COR[m.tipo_evento]||'#64748b'}"></div>
-        <div>
-          <div class="mov-event">${m.numero_bag||'—'} — ${EVENTO_LABEL[m.tipo_evento]||m.tipo_evento}</div>
-          <div class="mov-meta">${fmtData(m.criado_em)} · ${m.operador||'—'}</div>
+async function carregarDashboard() {
+  if(!db) return;
+  const snap=await getDocs(collection(db,'bags'));
+  const bags=snap.docs.map(d=>d.data());
+  g('kTotal').textContent=bags.length;
+  g('kEstoque').textContent=bags.filter(b=>b.status==='em_estoque').length;
+  g('kExpedido').textContent=bags.filter(b=>b.status==='expedido').length;
+  const movSnap=await getDocs(query(collection(db,'movimentacoes'),orderBy('criado_em','desc'),limit(20)));
+  g('movList').innerHTML=movSnap.empty?'<p class="vazio">Nenhuma movimentação ainda.</p>':
+    movSnap.docs.map(d=>{const m=d.data(); return `
+      <div class="tl-item">
+        <div class="tl-dot" style="background:${EV_COR[m.tipo_evento]||'#475569'}"></div>
+        <div class="tl-corpo">
+          <div class="tl-evento">${m.numero_bag||'—'} — ${EV_LABEL[m.tipo_evento]||m.tipo_evento}</div>
+          <div class="tl-meta">${fmtData(m.criado_em)} · ${m.operador||'—'}</div>
         </div>
-      </div>`;
-    }).join('');
-  }
-
-  // Lista de bags
-  const bagsEl = document.getElementById('bagsList');
-  if (!bags.length) {
-    bagsEl.innerHTML = '<p style="color:var(--text2);font-size:13px">Nenhum bag cadastrado ainda.</p>';
-  } else {
-    const sc = { em_estoque:'badge-green', expedido:'badge-amber', perdido:'badge-red' };
-    bagsEl.innerHTML = [...bags].reverse().map(b => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px;gap:6px;flex-wrap:wrap">
-        <span style="font-weight:600;min-width:75px">${b.numero_bag}</span>
-        <span style="color:var(--text2);flex:1">${b.cultivar_nome||'—'}</span>
-        <span style="color:var(--text3);font-size:11px">${b.localizacao_atual||''}</span>
-        <span class="badge ${sc[b.status]||'badge-gray'}">${(b.status||'').replace('_',' ')}</span>
+      </div>`}).join('');
+  const stCls={em_estoque:'tag-verde',expedido:'tag-amarelo',perdido:'tag-vermelho'};
+  const stTxt={em_estoque:'Em estoque',expedido:'Expedido',perdido:'Perdido'};
+  g('bagsList').innerHTML=!bags.length?'<p class="vazio">Nenhum bag cadastrado ainda.</p>':
+    [...bags].reverse().map(b=>`
+      <div class="linha-item">
+        <div>
+          <span class="item-num">${b.numero_bag}</span>
+          <span class="item-sub">${b.cultivar_nome||'—'} · ${b.localizacao_atual||'—'}</span>
+        </div>
+        <span class="tag ${stCls[b.status]||'tag-cinza'}">${stTxt[b.status]||b.status||'—'}</span>
       </div>`).join('');
-  }
 };
 
-// ──────────────────────────────────────────
-// UTILITÁRIOS
-// ──────────────────────────────────────────
-function fmtData(ts) {
-  if (!ts) return '—';
-  const d = ts.toDate ? ts.toDate() : new Date(ts);
-  return d.toLocaleDateString('pt-BR') + ' ' +
-         d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+function g(id){ return document.getElementById(id); }
+function fmtData(ts){
+  if(!ts) return '—';
+  const d=ts.toDate?ts.toDate():new Date(ts);
+  return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
 }
-
-let flashTimer = null;
-window.flash = function(msg, tipo) {
-  const el = document.getElementById('flash');
-  el.textContent = msg;
-  el.className = `flash ${tipo} show`;
-  clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => el.classList.remove('show'), 3200);
+let ft=null;
+function flash(msg,tipo){
+  const el=g('flash');
+  el.textContent=msg; el.className='flash flash-'+tipo+' show';
+  clearTimeout(ft); ft=setTimeout(()=>el.classList.remove('show'),3000);
 };
 </script>
 
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+
 :root{
-  --bg:#0f172a;--bg2:#1e293b;--bg3:#334155;
-  --border:#334155;--border2:#475569;
-  --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;
-  --green:#22c55e;--green-bg:rgba(34,197,94,.12);
-  --amber:#f59e0b;--amber-bg:rgba(245,158,11,.12);
-  --red:#ef4444;--red-bg:rgba(239,68,68,.12);
-  --blue:#3b82f6;--blue-bg:rgba(59,130,246,.12);
-  --radius:10px;--radius-sm:6px;
+  --bg:        #0b1120;
+  --bg2:       #111827;
+  --bg3:       #1a2438;
+  --bg4:       #212f45;
+  --borda:     #1e2d45;
+  --borda2:    #2a3f5f;
+  --texto:     #e2e8f4;
+  --texto2:    #7e93b4;
+  --texto3:    #4a607f;
+  --azul:      #4f8ef7;
+  --azul-dim:  rgba(79,142,247,.12);
+  --verde:     #34d399;
+  --verde-dim: rgba(52,211,153,.12);
+  --amarelo:   #fbbf24;
+  --amarelo-dim:rgba(251,191,36,.12);
+  --vermelho:  #f87171;
+  --verm-dim:  rgba(248,113,113,.12);
+  --r:         10px;
+  --r-sm:      6px;
 }
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;min-height:100vh}
 
-.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.logo{font-size:17px;font-weight:700;letter-spacing:-.3px}
-.logo span{color:var(--blue)}
-.conn-dot{width:8px;height:8px;border-radius:50%;background:var(--text3);display:inline-block;margin-right:6px;transition:background .3s}
-.conn-dot.ok{background:var(--green)}
-.conn-dot.err{background:var(--red)}
-.conn-label{font-size:12px;color:var(--text2)}
+body{
+  background:var(--bg);
+  color:var(--texto);
+  font-family:'Barlow',sans-serif;
+  font-size:15px;
+  line-height:1.5;
+  min-height:100dvh;
+  padding-bottom:68px;
+}
+@media(min-width:601px){ body{padding-bottom:0;padding-top:0} }
 
-.tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch}
-.tab{flex:1;min-width:64px;padding:11px 4px;text-align:center;font-size:11px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
-.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
-.tab-icon{display:block;font-size:17px;margin-bottom:2px}
+/* ── HEADER ── */
+.header{
+  background:var(--bg2);
+  border-bottom:1px solid var(--borda);
+  padding:0 20px;
+  height:52px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  position:sticky;top:0;z-index:200;
+}
+.logo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-weight:800;
+  font-size:22px;
+  letter-spacing:-.3px;
+  color:var(--texto);
+  display:flex;align-items:center;gap:8px;
+}
+.logo-badge{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:11px;font-weight:700;
+  background:var(--azul-dim);
+  color:var(--azul);
+  border:1px solid rgba(79,142,247,.25);
+  padding:2px 8px;border-radius:4px;
+  letter-spacing:.8px;text-transform:uppercase;
+}
+.conn{display:flex;align-items:center;gap:7px}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--texto3);flex-shrink:0;transition:background .3s}
+.conn-dot.ok{background:var(--verde);box-shadow:0 0 5px var(--verde)}
+.conn-dot.err{background:var(--vermelho)}
+#connTxt{font-size:12px;color:var(--texto2);font-weight:500}
 
-.screen{display:none;padding:16px;max-width:600px;margin:0 auto}
+/* ── NAVEGAÇÃO ── */
+/* Mobile: barra inferior */
+.nav{
+  position:fixed;bottom:0;left:0;right:0;
+  background:var(--bg2);
+  border-top:1px solid var(--borda);
+  display:flex;
+  z-index:200;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+/* Desktop: barra superior */
+@media(min-width:601px){
+  .nav{
+    position:static;
+    border-top:none;
+    border-bottom:1px solid var(--borda);
+    padding-bottom:0;
+  }
+  body{padding-bottom:0}
+}
+.nav-item{
+  flex:1;
+  display:flex;flex-direction:column;align-items:center;
+  gap:2px;padding:8px 4px;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:11px;font-weight:600;
+  letter-spacing:.3px;text-transform:uppercase;
+  color:var(--texto3);
+  cursor:pointer;
+  border-bottom:2px solid transparent;
+  transition:color .15s,border-color .15s;
+  user-select:none;-webkit-tap-highlight-color:transparent;
+}
+.nav-item i{font-size:20px}
+.nav-item.active{color:var(--azul);border-bottom-color:var(--azul)}
+@media(min-width:601px){
+  .nav-item{padding:10px 8px;font-size:12px}
+}
+
+/* ── SCREENS ── */
+.screen{display:none;padding:20px 16px;max-width:660px;margin:0 auto}
 .screen.active{display:block}
 
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:12px}
-.card-title{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+/* ── TÍTULO DE PÁGINA ── */
+.pg-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:26px;font-weight:800;
+  color:var(--texto);
+  letter-spacing:-.3px;
+  margin-bottom:2px;
+}
+.pg-sub{font-size:13px;color:var(--texto2);margin-bottom:20px}
 
-label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px;font-weight:500}
-input,select{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-size:15px;outline:none;transition:border .15s}
-input:focus,select:focus{border-color:var(--blue)}
+/* ── BANNER AVISO ── */
+.banner{
+  display:none;
+  align-items:flex-start;gap:10px;
+  background:var(--amarelo-dim);
+  border:1px solid rgba(251,191,36,.25);
+  border-radius:var(--r);
+  padding:12px 14px;
+  margin-bottom:18px;
+}
+.banner i{color:var(--amarelo);font-size:18px;flex-shrink:0;margin-top:1px}
+.banner-titulo{font-size:13px;font-weight:600;color:var(--amarelo);margin-bottom:2px}
+.banner-texto{font-size:12px;color:var(--texto2);line-height:1.5}
+.banner-link{color:var(--azul);cursor:pointer;text-decoration:underline}
+
+/* ── SEÇÕES (substituem cards) ── */
+.secao{
+  background:var(--bg2);
+  border:1px solid var(--borda);
+  border-radius:var(--r);
+  padding:16px;
+  margin-bottom:12px;
+}
+.secao-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:13px;font-weight:700;
+  color:var(--texto2);
+  text-transform:uppercase;
+  letter-spacing:.6px;
+  margin-bottom:14px;
+  padding-bottom:10px;
+  border-bottom:1px solid var(--borda);
+}
+.secao-label{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--texto3);
+  text-transform:uppercase;
+  letter-spacing:.8px;
+  margin:14px 0 6px;
+}
+.secao-topo{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;gap:8px}
+
+/* ── FORMULÁRIO ── */
+.campo{margin-bottom:13px}
+.campo:last-child{margin-bottom:0}
+.campo-linha{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:13px}
+label{
+  display:block;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:12px;font-weight:700;
+  color:var(--texto2);
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  margin-bottom:5px;
+}
+input,select{
+  width:100%;
+  background:var(--bg3);
+  border:1px solid var(--borda2);
+  border-radius:var(--r-sm);
+  padding:9px 12px;
+  color:var(--texto);
+  font-size:14px;
+  font-family:'Barlow',sans-serif;
+  outline:none;
+  transition:border-color .15s,box-shadow .15s;
+  -webkit-appearance:none;
+}
+input:focus,select:focus{
+  border-color:var(--azul);
+  box-shadow:0 0 0 3px var(--azul-dim);
+}
+select{
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237e93b4' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;
+  padding-right:32px;
+}
 select option{background:var(--bg2)}
-.form-group{margin-bottom:12px}
-.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+::placeholder{color:var(--texto3);font-family:'Barlow',sans-serif}
 
-.epc-wrap{position:relative}
-.epc-field{font-family:monospace;font-size:16px;font-weight:700;letter-spacing:1px;padding-right:44px;background:var(--bg);border:2px solid var(--blue);color:var(--blue)}
-.epc-field::placeholder{color:var(--text3);font-weight:400;font-size:13px;letter-spacing:0}
-.epc-clear{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;padding:4px;line-height:1}
+/* ── CAMPO EPC ── */
+.epc-wrap{position:relative;margin-bottom:6px}
+.epc-input{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:15px;font-weight:600;
+  letter-spacing:1.5px;
+  background:var(--bg);
+  border:2px solid var(--azul);
+  border-radius:var(--r-sm);
+  padding:11px 40px 11px 12px;
+  color:var(--azul);
+  width:100%;outline:none;
+  transition:box-shadow .15s;
+}
+.epc-input:focus{box-shadow:0 0 0 3px var(--azul-dim)}
+.epc-input::placeholder{
+  color:var(--texto3);
+  font-family:'Barlow',sans-serif;
+  font-size:13px;font-weight:400;letter-spacing:0;
+}
+.epc-limpar{
+  position:absolute;right:10px;top:50%;transform:translateY(-50%);
+  background:none;border:none;color:var(--texto3);
+  cursor:pointer;font-size:16px;padding:4px;
+  transition:color .1s;
+}
+.epc-limpar:hover{color:var(--texto)}
+.epc-status{font-size:12px;color:var(--texto3);min-height:18px;margin-bottom:2px;font-family:'Barlow',sans-serif}
+.ok-text{color:var(--verde)}
 
-.btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:12px 18px;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer;border:none;transition:opacity .15s;width:100%}
+/* ── BOTÕES ── */
+.btn{
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  padding:11px 18px;
+  border-radius:var(--r-sm);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:15px;font-weight:700;letter-spacing:.3px;
+  cursor:pointer;border:none;
+  transition:opacity .15s,transform .1s;
+  width:100%;
+  -webkit-tap-highlight-color:transparent;
+}
 .btn+.btn{margin-top:8px}
-.btn-primary{background:var(--blue);color:#fff}
-.btn-success{background:var(--green);color:#fff}
-.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border2)}
-.btn:active{opacity:.8}
+.btn:active{opacity:.8;transform:scale(.98)}
+.btn i{font-size:17px}
+.btn-azul{background:var(--azul);color:#fff}
+.btn-verde{background:var(--verde);color:#0b1120}
+.btn-cinza{background:var(--bg4);color:var(--texto);border:1px solid var(--borda2)}
+.btn-verm{background:var(--verm-dim);color:var(--vermelho);border:1px solid rgba(248,113,113,.25)}
 
-.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-.badge-green{background:var(--green-bg);color:var(--green)}
-.badge-amber{background:var(--amber-bg);color:var(--amber)}
-.badge-red{background:var(--red-bg);color:var(--red)}
-.badge-blue{background:var(--blue-bg);color:var(--blue)}
-.badge-gray{background:var(--bg3);color:var(--text2)}
+/* ── TAGS/BADGES ── */
+.tag{
+  display:inline-flex;align-items:center;
+  padding:3px 10px;border-radius:20px;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:12px;font-weight:700;
+  letter-spacing:.3px;white-space:nowrap;
+}
+.tag-verde{background:var(--verde-dim);color:var(--verde)}
+.tag-amarelo{background:var(--amarelo-dim);color:var(--amarelo)}
+.tag-vermelho{background:var(--verm-dim);color:var(--vermelho)}
+.tag-azul{background:var(--azul-dim);color:var(--azul)}
+.tag-cinza{background:var(--bg4);color:var(--texto2)}
 
-.kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
-.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:12px;text-align:center}
-.kpi-val{font-size:26px;font-weight:700}
-.kpi-lbl{font-size:11px;color:var(--text2);margin-top:3px}
+/* ── KPIs ── */
+.kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.kpi{
+  background:var(--bg2);border:1px solid var(--borda);
+  border-radius:var(--r);padding:14px 10px;text-align:center;
+}
+.kpi-val{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:32px;font-weight:800;line-height:1;
+}
+.kpi-lbl{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:12px;font-weight:600;
+  color:var(--texto2);margin-top:4px;
+  text-transform:uppercase;letter-spacing:.4px;
+}
 
-.mov-item{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
-.mov-item:last-child{border-bottom:none}
-.mov-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:4px}
-.mov-event{font-size:13px;font-weight:500}
-.mov-meta{font-size:11px;color:var(--text3);margin-top:2px}
+/* ── LINHAS DE LISTA ── */
+.linha-item{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:9px 0;border-bottom:1px solid var(--borda);gap:8px;
+}
+.linha-item:last-child{border-bottom:none}
+.item-num{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:15px;font-weight:700;
+  color:var(--texto);display:block;
+}
+.item-sub{font-size:12px;color:var(--texto2);display:block;margin-top:1px}
 
-.result-card{background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:14px;margin-top:12px}
-.result-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px}
-.result-row:last-child{border-bottom:none}
-.result-key{color:var(--text2)}
-.result-val{font-weight:500;text-align:right;max-width:60%}
+/* ── TIMELINE ── */
+.tl-item{display:flex;gap:11px;padding:9px 0;border-bottom:1px solid var(--borda)}
+.tl-item:last-child{border-bottom:none}
+.tl-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:5px}
+.tl-evento{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:14px;font-weight:700;color:var(--texto);
+}
+.tl-meta{font-size:11px;color:var(--texto3);margin-top:2px;font-family:'IBM Plex Mono',monospace}
+.tl-obs{font-size:11px;color:var(--texto2);margin-top:3px;font-style:italic}
 
-.setup-banner{background:var(--amber-bg);border:1px solid var(--amber);border-radius:var(--radius);padding:14px;margin-bottom:16px}
-.setup-banner h3{color:var(--amber);font-size:14px;margin-bottom:6px}
-.setup-banner p{font-size:12px;color:var(--text2);line-height:1.6}
-.setup-banner code{background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:11px}
+/* ── DETALHE BAG ── */
+.bag-num{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:24px;font-weight:800;color:var(--texto);
+}
+.bag-epc{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;color:var(--azul);margin-top:2px;
+}
+.detalhe-grid{
+  display:grid;grid-template-columns:1fr 1fr;
+  border-top:1px solid var(--borda);
+  margin-bottom:12px;
+}
+.dr{padding:8px 0;border-bottom:1px solid var(--borda)}
+.dr:nth-child(odd){padding-right:12px;border-right:1px solid var(--borda)}
+.dr:nth-child(even){padding-left:12px}
+.dr:nth-last-child(-n+2){border-bottom:none}
+.dr-k{
+  display:block;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:10px;font-weight:700;
+  color:var(--texto3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;
+}
+.dr-v{font-size:13px;font-weight:600;color:var(--texto)}
+.loc-bar{
+  background:var(--bg3);border-radius:var(--r-sm);
+  padding:10px 12px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.loc-label{font-size:12px;color:var(--texto2);font-weight:500;display:flex;align-items:center;gap:4px}
+.loc-val{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:14px;font-weight:700;color:var(--texto);text-align:right;
+}
 
-.flash{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 20px;border-radius:var(--radius);font-size:14px;font-weight:500;z-index:999;opacity:0;transition:opacity .25s;pointer-events:none;min-width:240px;text-align:center;white-space:nowrap}
-.flash.show{opacity:1}
-.flash.ok{background:var(--green);color:#fff}
-.flash.err{background:var(--red);color:#fff}
-.flash.warn{background:var(--amber);color:#000}
+/* ── PEDIDO ATIVO ── */
+.pedido-bar{
+  background:var(--azul-dim);border:1px solid rgba(79,142,247,.25);
+  border-radius:var(--r-sm);
+  padding:10px 14px;margin-bottom:12px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.pedido-bar-info{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:15px;font-weight:700;color:var(--azul);
+}
+.pedido-bar-sub{font-size:12px;color:var(--texto2);margin-top:1px}
 
-.epc-status{font-size:12px;color:var(--text3);margin-top:-6px;margin-bottom:8px;min-height:18px}
+/* ── CONFIG STEPS ── */
+.step{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--borda);align-items:flex-start}
+.step:last-child{border-bottom:none}
+.step-n{
+  width:22px;height:22px;border-radius:50%;flex-shrink:0;
+  background:var(--azul-dim);color:var(--azul);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:13px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;margin-top:1px;
+}
+.step-txt{font-size:13px;color:var(--texto);line-height:1.5}
+.step-txt b{color:var(--texto);font-weight:600}
+
+.info-caixa{
+  background:var(--bg3);border-radius:var(--r-sm);
+  padding:11px 13px;margin-top:12px;
+}
+.info-caixa-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:12px;font-weight:700;color:var(--amarelo);margin-bottom:3px;
+}
+.info-caixa-texto{font-size:12px;color:var(--texto2);line-height:1.6}
+
+/* ── MISCELÂNEA ── */
+.mono{font-family:'IBM Plex Mono',monospace}
+.vazio{font-size:13px;color:var(--texto2);padding:6px 0}
+.estado-vazio{text-align:center;padding:32px 0;color:var(--texto2)}
+.estado-vazio i{font-size:40px;color:var(--texto3);display:block;margin-bottom:8px}
+.estado-vazio p{font-size:14px}
+
+/* ── FLASH ── */
+.flash{
+  position:fixed;bottom:76px;left:50%;
+  transform:translateX(-50%) translateY(6px);
+  padding:10px 18px;border-radius:var(--r);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:14px;font-weight:700;letter-spacing:.2px;
+  z-index:999;opacity:0;
+  transition:opacity .2s,transform .2s;
+  pointer-events:none;white-space:nowrap;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);
+}
+@media(min-width:601px){.flash{bottom:24px}}
+.flash.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.flash-ok{background:#065f46;color:#6ee7b7;border:1px solid #065f46}
+.flash-err{background:#7f1d1d;color:#fca5a5;border:1px solid #7f1d1d}
+.flash-warn{background:#78350f;color:#fde68a;border:1px solid #78350f}
 </style>
 </head>
 <body>
@@ -674,68 +812,73 @@ select option{background:var(--bg2)}
 <div class="flash" id="flash"></div>
 
 <!-- HEADER -->
-<div class="header">
-  <div class="logo">Seed<span>Base</span> RFID</div>
-  <div>
-    <span class="conn-dot" id="connDot"></span>
-    <span class="conn-label" id="connLabel">Conectando...</span>
+<header class="header">
+  <div class="logo">SeedBase <span class="logo-badge">RFID</span></div>
+  <div class="conn">
+    <div class="conn-dot" id="connDot"></div>
+    <span id="connTxt">Iniciando...</span>
   </div>
-</div>
+</header>
 
-<!-- TABS -->
-<div class="tabs">
-  <div class="tab active" onclick="goTab('vincular')">
-    <span class="tab-icon">🏷️</span>Vincular
+<!-- NAVEGAÇÃO -->
+<nav class="nav">
+  <div class="nav-item active" id="nav-vincular" onclick="goTab('vincular')">
+    <i class="ti ti-tag"></i>Vincular
   </div>
-  <div class="tab" onclick="goTab('conferir')">
-    <span class="tab-icon">🚛</span>Conferir
+  <div class="nav-item" id="nav-conferir" onclick="goTab('conferir')">
+    <i class="ti ti-truck"></i>Conferir
   </div>
-  <div class="tab" onclick="goTab('buscar')">
-    <span class="tab-icon">🔍</span>Buscar
+  <div class="nav-item" id="nav-buscar" onclick="goTab('buscar')">
+    <i class="ti ti-search"></i>Buscar
   </div>
-  <div class="tab" onclick="goTab('dashboard')">
-    <span class="tab-icon">📊</span>Estoque
+  <div class="nav-item" id="nav-dashboard" onclick="goTab('dashboard')">
+    <i class="ti ti-layout-dashboard"></i>Estoque
   </div>
-  <div class="tab" onclick="goTab('config')">
-    <span class="tab-icon">⚙️</span>Config
+  <div class="nav-item" id="nav-config" onclick="goTab('config')">
+    <i class="ti ti-settings"></i>Config
   </div>
-</div>
+</nav>
 
-<!-- ══ TELA 1 — VINCULAR ══ -->
-<div class="screen active" id="screen-vincular">
+<!-- ══ VINCULAR ══ -->
+<main class="screen active" id="screen-vincular">
+  <div class="pg-titulo">Vincular bag</div>
+  <div class="pg-sub">Leia a tag e preencha os dados do bag</div>
 
-  <div class="setup-banner" id="setupBanner" style="display:none">
-    <h3>⚠️ Configure o Firebase primeiro</h3>
-    <p>Vá na aba <strong>⚙️ Config</strong>, cole os dados do seu projeto Firebase e toque em <strong>Salvar e conectar</strong>.</p>
+  <div id="banner" class="banner">
+    <i class="ti ti-alert-triangle"></i>
+    <div>
+      <div class="banner-titulo">Firebase não configurado</div>
+      <div class="banner-texto">Vá na aba <span class="banner-link" onclick="goTab('config')">Config</span>, cole os dados do Firebase e toque em Salvar.</div>
+    </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">📡 Tag RFID</div>
-    <div class="form-group">
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-antenna"></i> Tag RFID</div>
+    <div class="campo">
       <label>EPC da tag — aponte o leitor ou digite</label>
       <div class="epc-wrap">
-        <input class="epc-field" id="epcInput" type="text"
-          placeholder="Aguardando leitor..."
+        <input class="epc-input" id="epcInput" type="text"
+          placeholder="Aguardando leitor HID..."
           autocomplete="off" autocorrect="off" spellcheck="false"
           oninput="onEpcInput(this.value)"/>
-        <button class="epc-clear" onclick="clearEpc('epcInput')">✕</button>
+        <button class="epc-limpar" onclick="clearField('epcInput')">✕</button>
       </div>
       <div class="epc-status" id="epcStatus"></div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">📦 Dados do bag</div>
-    <div class="form-group">
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-package"></i> Dados do bag</div>
+    <div class="campo">
       <label>Número do bag / lote *</label>
       <input id="numeroBag" type="text" placeholder="Ex: 26S0001"/>
     </div>
-    <div class="form-group">
+    <div class="campo">
       <label>Cultivar *</label>
       <select id="cultivarSelect"></select>
     </div>
-    <div class="form-row">
-      <div class="form-group">
+    <div class="campo-linha">
+      <div>
         <label>Categoria</label>
         <select id="categoriaSelect">
           <option value="C1">C1</option>
@@ -744,195 +887,245 @@ select option{background:var(--bg2)}
           <option value="S2">S2</option>
         </select>
       </div>
-      <div class="form-group">
+      <div>
         <label>Peneira</label>
         <input id="peneira" type="text" placeholder="Ex: Redonda 5,5"/>
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group">
+    <div class="campo-linha">
+      <div>
         <label>Peso (kg)</label>
         <input id="peso" type="number" placeholder="40" step="0.1"/>
       </div>
-      <div class="form-group">
+      <div>
         <label>Tratamento</label>
         <input id="tratamento" type="text" placeholder="Ex: Standak Top"/>
       </div>
     </div>
-    <div class="form-group">
+    <div class="campo">
       <label>Produtor</label>
       <input id="produtor" type="text" placeholder="Nome do produtor"/>
     </div>
-    <div class="form-group">
+    <div class="campo">
       <label>Localização inicial</label>
       <input id="localizacao" type="text" placeholder="Ex: SCV — Rua A1, Pos 01"/>
     </div>
   </div>
 
-  <button class="btn btn-primary" onclick="vincularBag()">🔗 Vincular tag ao bag</button>
-  <button class="btn btn-ghost" onclick="goTab('buscar')">🔍 Buscar bag existente</button>
-</div>
+  <button class="btn btn-azul" onclick="vincularBag()">
+    <i class="ti ti-link"></i> Vincular tag ao bag
+  </button>
+  <button class="btn btn-cinza" onclick="goTab('buscar')">
+    <i class="ti ti-search"></i> Buscar bag existente
+  </button>
+</main>
 
-<!-- ══ TELA 2 — CONFERIR CARGA ══ -->
-<div class="screen" id="screen-conferir">
-  <div class="card">
-    <div class="card-title">🚛 Novo carregamento</div>
-    <div class="form-group">
-      <label>Número do pedido / NF</label>
-      <input id="numPedido" type="text" placeholder="Ex: NF 001238"/>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Placa</label>
-        <input id="placa" type="text" placeholder="ABC-1234"/>
+<!-- ══ CONFERIR ══ -->
+<main class="screen" id="screen-conferir">
+  <div class="pg-titulo">Conferência</div>
+  <div class="pg-sub">Registre e valide o carregamento</div>
+
+  <div id="pedidoForm">
+    <div class="secao">
+      <div class="secao-titulo"><i class="ti ti-truck"></i> Novo carregamento</div>
+      <div class="campo">
+        <label>Número do pedido / NF</label>
+        <input id="numPedido" type="text" placeholder="Ex: NF 001238"/>
       </div>
-      <div class="form-group">
-        <label>Motorista</label>
-        <input id="motorista" type="text" placeholder="Nome"/>
+      <div class="campo-linha">
+        <div>
+          <label>Placa</label>
+          <input id="placa" type="text" placeholder="ABC-1234"/>
+        </div>
+        <div>
+          <label>Motorista</label>
+          <input id="motorista" type="text" placeholder="Nome"/>
+        </div>
       </div>
+      <button class="btn btn-azul" onclick="criarPedido()">
+        <i class="ti ti-clipboard-check"></i> Iniciar conferência
+      </button>
     </div>
-    <button class="btn btn-primary" onclick="criarPedido()">📋 Iniciar conferência</button>
   </div>
 
   <div id="conferenciaPainel" style="display:none">
-    <div class="card">
-      <div class="card-title">📡 Leitura dos bags</div>
-      <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Aponte o leitor para cada bag carregado.</p>
+    <div class="pedido-bar">
+      <div>
+        <div class="pedido-bar-info" id="pedidoInfo">—</div>
+        <div class="pedido-bar-sub">Conferência em andamento</div>
+      </div>
+      <span class="tag tag-azul">Ativo</span>
+    </div>
+
+    <div class="secao">
+      <div class="secao-titulo"><i class="ti ti-antenna"></i> Leitura dos bags</div>
+      <p style="font-size:13px;color:var(--texto2);margin-bottom:10px">Aponte o leitor para cada bag carregado no caminhão.</p>
       <div class="epc-wrap">
-        <input class="epc-field" id="epcCarga" type="text"
+        <input class="epc-input" id="epcCarga" type="text"
           placeholder="Aguardando leitor..."
           autocomplete="off" autocorrect="off" spellcheck="false"
           oninput="onEpcCarga(this.value)"/>
-        <button class="epc-clear" onclick="clearEpc('epcCarga')">✕</button>
+        <button class="epc-limpar" onclick="clearField('epcCarga')">✕</button>
       </div>
     </div>
 
     <div class="kpi-row">
       <div class="kpi">
-        <div class="kpi-val" id="carga-lidos" style="color:var(--green)">0</div>
+        <div class="kpi-val" id="kLidos" style="color:var(--verde)">0</div>
         <div class="kpi-lbl">Lidos</div>
       </div>
       <div class="kpi">
-        <div class="kpi-val" id="carga-ok" style="color:var(--blue)">0</div>
+        <div class="kpi-val" id="kOk" style="color:var(--azul)">0</div>
         <div class="kpi-lbl">OK</div>
       </div>
       <div class="kpi">
-        <div class="kpi-val" id="carga-div" style="color:var(--red)">0</div>
-        <div class="kpi-lbl">Divergências</div>
+        <div class="kpi-val" id="kDiv" style="color:var(--vermelho)">0</div>
+        <div class="kpi-lbl">Diverg.</div>
       </div>
     </div>
 
-    <div class="card" id="carga-lista-div" style="display:none">
-      <div class="card-title" style="color:var(--red)">⚠️ Divergências</div>
-      <div id="carga-divs"></div>
+    <div id="divWrap" style="display:none" class="secao">
+      <div class="secao-titulo" style="color:var(--vermelho)"><i class="ti ti-alert-triangle"></i> Divergências</div>
+      <div id="divList"></div>
     </div>
 
-    <div class="card">
-      <div class="card-title">✅ Bags lidos</div>
-      <div id="carga-lidos-lista"><p style="color:var(--text2);font-size:13px">Nenhum bag lido ainda.</p></div>
+    <div class="secao">
+      <div class="secao-titulo"><i class="ti ti-checks"></i> Bags lidos</div>
+      <div id="cargaLidosList"><p class="vazio">Nenhum bag lido ainda.</p></div>
     </div>
 
-    <button class="btn btn-success" onclick="confirmarExpedicao()">✅ Confirmar expedição</button>
-    <button class="btn btn-ghost" onclick="cancelarPedido()">✕ Cancelar</button>
+    <button class="btn btn-verde" onclick="confirmarExpedicao()">
+      <i class="ti ti-check"></i> Confirmar expedição
+    </button>
+    <button class="btn btn-cinza" onclick="cancelarPedido()">
+      <i class="ti ti-x"></i> Cancelar
+    </button>
   </div>
-</div>
+</main>
 
-<!-- ══ TELA 3 — BUSCAR ══ -->
-<div class="screen" id="screen-buscar">
-  <div class="card">
-    <div class="card-title">🔍 Buscar bag</div>
+<!-- ══ BUSCAR ══ -->
+<main class="screen" id="screen-buscar">
+  <div class="pg-titulo">Buscar bag</div>
+  <div class="pg-sub">Por EPC, número do bag ou lote</div>
+
+  <div class="secao">
     <div class="epc-wrap" style="margin-bottom:10px">
-      <input class="epc-field" id="buscaEpc" type="text"
+      <input class="epc-input" id="buscaInput" type="text"
         placeholder="EPC ou número do bag..."
         autocomplete="off" autocorrect="off" spellcheck="false"/>
-      <button class="epc-clear" onclick="clearEpc('buscaEpc');document.getElementById('buscaResultado').innerHTML=''">✕</button>
+      <button class="epc-limpar" onclick="clearField('buscaInput');document.getElementById('buscaResult').innerHTML=''">✕</button>
     </div>
-    <button class="btn btn-primary" onclick="buscarBag()">🔍 Buscar</button>
+    <button class="btn btn-azul" onclick="buscarBag()">
+      <i class="ti ti-search"></i> Buscar
+    </button>
   </div>
-  <div id="buscaResultado"></div>
-</div>
+  <div id="buscaResult"></div>
+</main>
 
-<!-- ══ TELA 4 — DASHBOARD ══ -->
-<div class="screen" id="screen-dashboard">
+<!-- ══ DASHBOARD ══ -->
+<main class="screen" id="screen-dashboard">
+  <div class="pg-titulo">Estoque</div>
+  <div class="pg-sub">Visão geral dos bags cadastrados</div>
+
   <div class="kpi-row">
     <div class="kpi">
-      <div class="kpi-val" id="kpi-total" style="color:var(--blue)">—</div>
-      <div class="kpi-lbl">Total bags</div>
+      <div class="kpi-val" id="kTotal" style="color:var(--azul)">—</div>
+      <div class="kpi-lbl">Total</div>
     </div>
     <div class="kpi">
-      <div class="kpi-val" id="kpi-estoque" style="color:var(--green)">—</div>
-      <div class="kpi-lbl">Em estoque</div>
+      <div class="kpi-val" id="kEstoque" style="color:var(--verde)">—</div>
+      <div class="kpi-lbl">Estoque</div>
     </div>
     <div class="kpi">
-      <div class="kpi-val" id="kpi-expedido" style="color:var(--amber)">—</div>
+      <div class="kpi-val" id="kExpedido" style="color:var(--amarelo)">—</div>
       <div class="kpi-lbl">Expedidos</div>
     </div>
   </div>
-  <div class="card">
-    <div class="card-title">🕐 Últimas movimentações</div>
-    <div id="movList" style="color:var(--text2);font-size:13px">Carregando...</div>
-  </div>
-  <div class="card">
-    <div class="card-title">📦 Bags cadastrados</div>
-    <div id="bagsList" style="color:var(--text2);font-size:13px">Carregando...</div>
-  </div>
-  <button class="btn btn-ghost" onclick="carregarDashboard()">🔄 Atualizar</button>
-</div>
 
-<!-- ══ TELA 5 — CONFIG ══ -->
-<div class="screen" id="screen-config">
-  <div class="card">
-    <div class="card-title">🔥 Firebase</div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">
-      Acesse <strong>console.firebase.google.com</strong> → seu projeto → <strong>⚙️ Configurações do projeto → Seus apps → SDK</strong> e copie os valores abaixo.
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-history"></i> Últimas movimentações</div>
+    <div class="tl-wrap" id="movList"><p class="vazio">Carregando...</p></div>
+  </div>
+
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-packages"></i> Bags cadastrados</div>
+    <div id="bagsList"><p class="vazio">Carregando...</p></div>
+  </div>
+
+  <button class="btn btn-cinza" onclick="carregarDashboard()">
+    <i class="ti ti-refresh"></i> Atualizar
+  </button>
+</main>
+
+<!-- ══ CONFIG ══ -->
+<main class="screen" id="screen-config">
+  <div class="pg-titulo">Configurações</div>
+  <div class="pg-sub">Firebase, operador e leitor RFID</div>
+
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-brand-firebase"></i> Firebase</div>
+    <p style="font-size:12px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
+      Acesse <strong style="color:var(--texto)">console.firebase.google.com</strong> → seu projeto → ⚙️ Configurações → SDK e copie os dados abaixo.
     </p>
-    <div class="form-group">
+    <div class="campo">
       <label>API Key</label>
-      <input id="cfgApiKey" type="text" placeholder="AIzaSy..."/>
+      <input id="cfgApiKey" type="text" placeholder="AIzaSy..." style="font-family:'IBM Plex Mono',monospace;font-size:12px"/>
     </div>
-    <div class="form-group">
+    <div class="campo">
       <label>Project ID</label>
-      <input id="cfgProjectId" type="text" placeholder="meu-projeto-12345"/>
+      <input id="cfgProjectId" type="text" placeholder="meu-projeto-12345" style="font-family:'IBM Plex Mono',monospace;font-size:12px"/>
     </div>
-    <div class="form-group">
-      <label>App ID (opcional)</label>
-      <input id="cfgAppId" type="text" placeholder="1:123456:web:abc..."/>
-    </div>
-    <button class="btn btn-primary" onclick="salvarConfig()">💾 Salvar e conectar</button>
+    <button class="btn btn-azul" onclick="salvarConfig()">
+      <i class="ti ti-device-floppy"></i> Salvar e conectar
+    </button>
   </div>
 
-  <div class="card">
-    <div class="card-title">👤 Operador</div>
-    <div class="form-group">
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-user"></i> Operador</div>
+    <div class="campo">
       <label>Seu nome</label>
-      <input id="cfgOperador" type="text" placeholder="Ex: Ruan"/>
+      <input id="cfgOp" type="text" placeholder="Ex: Ruan"/>
     </div>
-    <div class="form-group">
+    <div class="campo">
       <label>Dispositivo</label>
-      <input id="cfgDispositivo" type="text" placeholder="Ex: Android SCV"/>
+      <input id="cfgDev" type="text" placeholder="Ex: Android SCV"/>
     </div>
-    <button class="btn btn-ghost" onclick="salvarOperador()">💾 Salvar</button>
+    <button class="btn btn-cinza" onclick="salvarOperador()">
+      <i class="ti ti-device-floppy"></i> Salvar operador
+    </button>
   </div>
 
-  <div class="card">
-    <div class="card-title">📡 Leitor RFID — modo HID teclado</div>
-    <p style="font-size:13px;color:var(--text2);line-height:1.7">
-      1. Configure o leitor BLE no modo <strong>HID Keyboard</strong><br>
-      2. Pareie via Bluetooth nas configurações do celular<br>
-      3. Abra a aba <strong>Vincular</strong> e toque no campo EPC<br>
-      4. Aponte o leitor para o bag — o código aparece sozinho ✅
-    </p>
-    <div style="margin-top:10px;padding:10px;background:var(--bg3);border-radius:var(--radius-sm)">
-      <div style="font-size:12px;color:var(--amber);font-weight:600;margin-bottom:3px">⚠️ Dica</div>
-      <div style="font-size:12px;color:var(--text2)">Sempre toque no campo EPC antes de usar o leitor para garantir o foco correto.</div>
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-bluetooth"></i> Leitor RFID — modo HID</div>
+    <div class="step">
+      <div class="step-n">1</div>
+      <div class="step-txt">Configure o leitor no modo <b>HID Keyboard</b> (veja o manual do seu leitor)</div>
+    </div>
+    <div class="step">
+      <div class="step-n">2</div>
+      <div class="step-txt">Pareie via <b>Bluetooth</b> nas configurações do celular Android</div>
+    </div>
+    <div class="step">
+      <div class="step-n">3</div>
+      <div class="step-txt">Na aba <b>Vincular</b>, toque no campo EPC azul para focar</div>
+    </div>
+    <div class="step">
+      <div class="step-n">4</div>
+      <div class="step-txt">Aponte o leitor para o bag — o código aparece automaticamente ✅</div>
+    </div>
+    <div class="info-caixa">
+      <div class="info-caixa-titulo">💡 Dica</div>
+      <div class="info-caixa-texto">Sempre toque no campo EPC antes de usar o leitor para garantir que o foco está correto.</div>
     </div>
   </div>
 
-  <div class="card" style="border-color:var(--red)">
-    <div class="card-title" style="color:var(--red)">🗑️ Resetar</div>
-    <button class="btn btn-ghost" onclick="limparConfig()">Limpar configuração local</button>
+  <div class="secao" style="border-color:rgba(248,113,113,.25)">
+    <div class="secao-titulo" style="color:var(--vermelho)"><i class="ti ti-trash"></i> Zona de perigo</div>
+    <button class="btn btn-verm" onclick="limparConfig()">
+      <i class="ti ti-trash"></i> Limpar configuração local
+    </button>
   </div>
-</div>
+</main>
 
 </body>
 </html>
