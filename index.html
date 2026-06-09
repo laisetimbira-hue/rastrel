@@ -54,6 +54,7 @@ const EV_COR = {
 let pedidoAtivo=null, cargaLidos=[], cargaDivs=[], epcTimer=null;
 
 window.addEventListener('DOMContentLoaded', () => {
+  carregarPreferencias();
   preencherCultivares();
   carregarCfgForm();
   tentarConectar();
@@ -495,7 +496,271 @@ async function importarLotesPiloto() {
   flash(total+' bags importados!','ok');
 }
 
+// ── LEITURA NFC ──
+let nfcAtivo = false;
+let nfcReader = null;
+
+async function lerNFC() {
+  // Verifica suporte
+  if (!('NDEFReader' in window)) {
+    // iPhone ou browser sem suporte — mostra instruções
+    g('nfcDica').style.display = 'block';
+    flash('NFC não suportado neste browser — veja as instruções abaixo','warn');
+    return;
+  }
+  if (nfcAtivo) {
+    pararNFC();
+    return;
+  }
+  try {
+    nfcReader = new NDEFReader();
+    await nfcReader.scan();
+    nfcAtivo = true;
+    const btn = g('btnNFC');
+    btn.innerHTML = '<i class="ti ti-nfc"></i> Aguardando tag... (toque para parar)';
+    btn.style.background = 'var(--verde)';
+    btn.style.color = '#0b1120';
+    g('epcStatus').innerHTML = '<span style="color:var(--verde)">📡 Aproxime a tag NFC do celular...</span>';
+
+    nfcReader.addEventListener('reading', ({ message, serialNumber }) => {
+      let epc = '';
+      // Tenta ler NDEF records
+      for (const record of message.records) {
+        if (record.recordType === 'text') {
+          const decoder = new TextDecoder(record.encoding || 'utf-8');
+          epc = decoder.decode(record.data).trim();
+          break;
+        }
+        if (record.recordType === 'url') {
+          const decoder = new TextDecoder();
+          const url = decoder.decode(record.data);
+          // Extrai código da URL se tiver
+          epc = url.split('/').pop().split('?')[0];
+          break;
+        }
+      }
+      // Se não tiver NDEF, usa o serial number da tag
+      if (!epc && serialNumber) {
+        epc = serialNumber.toUpperCase().replace(/:/g,'');
+      }
+      if (epc) {
+        g('epcInput').value = epc;
+        g('epcStatus').innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag lida: ' + epc + '</span>';
+        pararNFC();
+        // Vibra para confirmar
+        if (navigator.vibrate) navigator.vibrate(100);
+        g('numeroBag').focus();
+      }
+    });
+
+    nfcReader.addEventListener('readingerror', () => {
+      flash('Erro ao ler a tag — tente novamente','err');
+      pararNFC();
+    });
+
+  } catch(e) {
+    nfcAtivo = false;
+    if (e.name === 'NotAllowedError') {
+      flash('Permissão NFC negada — ative nas configurações','err');
+    } else if (e.name === 'NotSupportedError') {
+      flash('NFC não disponível neste dispositivo','err');
+      g('nfcDica').style.display = 'block';
+    } else {
+      flash('Erro NFC: ' + e.message,'err');
+    }
+  }
+}
+
+function pararNFC() {
+  nfcAtivo = false;
+  const btn = g('btnNFC');
+  if (btn) {
+    btn.innerHTML = '<i class="ti ti-nfc"></i> Ler tag NFC';
+    btn.style.background = '';
+    btn.style.color = '';
+  }
+}
+
+// ── TEMA CLARO/ESCURO ──
+function alternarTema() {
+  const body = document.body;
+  const btn = g('btnTema');
+  if (body.classList.contains('tema-claro')) {
+    body.classList.remove('tema-claro');
+    btn.textContent = '🌙';
+    localStorage.setItem('tema', 'escuro');
+  } else {
+    body.classList.add('tema-claro');
+    btn.textContent = '☀️';
+    localStorage.setItem('tema', 'claro');
+  }
+}
+
+// ── TAMANHO DA FONTE ──
+const FONTES = [12, 13, 14, 15, 16, 17, 18, 20];
+let fonteIdx = 3; // padrão: 15px
+
+function aumentarFonte() {
+  if (fonteIdx < FONTES.length - 1) fonteIdx++;
+  aplicarFonte();
+}
+function diminuirFonte() {
+  if (fonteIdx > 0) fonteIdx--;
+  aplicarFonte();
+}
+function aplicarFonte() {
+  document.documentElement.style.setProperty('--font-base', FONTES[fonteIdx] + 'px');
+  localStorage.setItem('fonteIdx', fonteIdx);
+}
+
+// ── CARREGAR PREFERÊNCIAS ──
+function carregarPreferencias() {
+  const tema = localStorage.getItem('tema');
+  if (tema === 'claro') {
+    document.body.classList.add('tema-claro');
+    const btn = g('btnTema');
+    if (btn) btn.textContent = '☀️';
+  }
+  const fi = localStorage.getItem('fonteIdx');
+  if (fi !== null) {
+    fonteIdx = parseInt(fi);
+    aplicarFonte();
+  }
+}
+
 function g(id){ return document.getElementById(id); }
+
+// ── LEITURA NFC ──
+let nfcAtivo = false;
+let nfcReader = null;
+
+async function lerNFC() {
+  // Verifica suporte
+  if (!('NDEFReader' in window)) {
+    // iPhone ou browser sem suporte — mostra instruções
+    g('nfcDica').style.display = 'block';
+    flash('NFC não suportado neste browser — veja as instruções abaixo','warn');
+    return;
+  }
+  if (nfcAtivo) {
+    pararNFC();
+    return;
+  }
+  try {
+    nfcReader = new NDEFReader();
+    await nfcReader.scan();
+    nfcAtivo = true;
+    const btn = g('btnNFC');
+    btn.innerHTML = '<i class="ti ti-nfc"></i> Aguardando tag... (toque para parar)';
+    btn.style.background = 'var(--verde)';
+    btn.style.color = '#0b1120';
+    g('epcStatus').innerHTML = '<span style="color:var(--verde)">📡 Aproxime a tag NFC do celular...</span>';
+
+    nfcReader.addEventListener('reading', ({ message, serialNumber }) => {
+      let epc = '';
+      // Tenta ler NDEF records
+      for (const record of message.records) {
+        if (record.recordType === 'text') {
+          const decoder = new TextDecoder(record.encoding || 'utf-8');
+          epc = decoder.decode(record.data).trim();
+          break;
+        }
+        if (record.recordType === 'url') {
+          const decoder = new TextDecoder();
+          const url = decoder.decode(record.data);
+          // Extrai código da URL se tiver
+          epc = url.split('/').pop().split('?')[0];
+          break;
+        }
+      }
+      // Se não tiver NDEF, usa o serial number da tag
+      if (!epc && serialNumber) {
+        epc = serialNumber.toUpperCase().replace(/:/g,'');
+      }
+      if (epc) {
+        g('epcInput').value = epc;
+        g('epcStatus').innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag lida: ' + epc + '</span>';
+        pararNFC();
+        // Vibra para confirmar
+        if (navigator.vibrate) navigator.vibrate(100);
+        g('numeroBag').focus();
+      }
+    });
+
+    nfcReader.addEventListener('readingerror', () => {
+      flash('Erro ao ler a tag — tente novamente','err');
+      pararNFC();
+    });
+
+  } catch(e) {
+    nfcAtivo = false;
+    if (e.name === 'NotAllowedError') {
+      flash('Permissão NFC negada — ative nas configurações','err');
+    } else if (e.name === 'NotSupportedError') {
+      flash('NFC não disponível neste dispositivo','err');
+      g('nfcDica').style.display = 'block';
+    } else {
+      flash('Erro NFC: ' + e.message,'err');
+    }
+  }
+}
+
+function pararNFC() {
+  nfcAtivo = false;
+  const btn = g('btnNFC');
+  if (btn) {
+    btn.innerHTML = '<i class="ti ti-nfc"></i> Ler tag NFC';
+    btn.style.background = '';
+    btn.style.color = '';
+  }
+}
+
+// ── TEMA CLARO/ESCURO ──
+function alternarTema() {
+  const body = document.body;
+  const btn = g('btnTema');
+  if (body.classList.contains('tema-claro')) {
+    body.classList.remove('tema-claro');
+    btn.textContent = '🌙';
+    localStorage.setItem('tema', 'escuro');
+  } else {
+    body.classList.add('tema-claro');
+    btn.textContent = '☀️';
+    localStorage.setItem('tema', 'claro');
+  }
+}
+
+// ── TAMANHO DA FONTE ──
+const FONTES = [12, 13, 14, 15, 16, 17, 18, 20];
+let fonteIdx = 3; // padrão: 15px
+
+function aumentarFonte() {
+  if (fonteIdx < FONTES.length - 1) fonteIdx++;
+  aplicarFonte();
+}
+function diminuirFonte() {
+  if (fonteIdx > 0) fonteIdx--;
+  aplicarFonte();
+}
+function aplicarFonte() {
+  document.documentElement.style.setProperty('--font-base', FONTES[fonteIdx] + 'px');
+  localStorage.setItem('fonteIdx', fonteIdx);
+}
+
+// ── CARREGAR PREFERÊNCIAS ──
+function carregarPreferencias() {
+  const tema = localStorage.getItem('tema');
+  if (tema === 'claro') {
+    document.body.classList.add('tema-claro');
+    const btn = g('btnTema');
+    if (btn) btn.textContent = '☀️';
+  }
+  const fi = localStorage.getItem('fonteIdx');
+  if (fi !== null) {
+    fonteIdx = parseInt(fi);
+    aplicarFonte();
+  }
+}
 
 function g(id){ return document.getElementById(id); }
 function fmtData(ts){
@@ -535,13 +800,35 @@ html{-webkit-text-size-adjust:100%}
   --verm-dim:  rgba(248,113,113,.12);
   --r:         10px;
   --r-sm:      6px;
+  --font-base: 15px;
+}
+
+/* ── TEMA CLARO ── */
+body.tema-claro{
+  --bg:        #f0f4f8;
+  --bg2:       #ffffff;
+  --bg3:       #e8eef5;
+  --bg4:       #dde5ef;
+  --borda:     #d0dae8;
+  --borda2:    #b8c8da;
+  --texto:     #1a2438;
+  --texto2:    #4a607f;
+  --texto3:    #7e93b4;
+  --azul:      #2563eb;
+  --azul-dim:  rgba(37,99,235,.10);
+  --verde:     #059669;
+  --verde-dim: rgba(5,150,105,.10);
+  --amarelo:   #d97706;
+  --amarelo-dim:rgba(217,119,6,.10);
+  --vermelho:  #dc2626;
+  --verm-dim:  rgba(220,38,38,.10);
 }
 
 body{
   background:var(--bg);
   color:var(--texto);
   font-family:'Barlow',sans-serif;
-  font-size:15px;
+  font-size:var(--font-base,15px);
   line-height:1.5;
   min-height:100dvh;
   padding-bottom:68px;
@@ -900,6 +1187,47 @@ select option{background:var(--bg2)}
 .estado-vazio i{font-size:40px;color:var(--texto3);display:block;margin-bottom:8px}
 .estado-vazio p{font-size:14px}
 
+/* ── BOTÃO NFC ── */
+.btn-nfc{
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  padding:11px 18px;
+  border-radius:var(--r-sm);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:15px;font-weight:700;letter-spacing:.3px;
+  cursor:pointer;
+  width:100%;
+  background:var(--bg3);
+  color:var(--azul);
+  border:2px solid var(--azul);
+  transition:all .2s;
+  -webkit-tap-highlight-color:transparent;
+  margin-top:8px;
+}
+.btn-nfc i{font-size:20px}
+.btn-nfc:active{opacity:.8;transform:scale(.98)}
+
+/* ── DICA iPHONE ── */
+.nfc-dica{
+  background:var(--bg3);
+  border:1px solid var(--borda2);
+  border-radius:var(--r-sm);
+  padding:12px 14px;
+  margin-top:10px;
+}
+.nfc-dica-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:13px;font-weight:700;
+  color:var(--texto);
+  margin-bottom:6px;
+  display:flex;align-items:center;gap:6px;
+}
+.nfc-dica-texto{
+  font-size:12px;
+  color:var(--texto2);
+  line-height:1.7;
+}
+.nfc-dica-texto strong{color:var(--texto)}
+
 /* ── IMPORTAÇÃO ── */
 .import-lote-info{display:flex;align-items:center;padding:6px 0;border-bottom:1px solid var(--borda)}
 .import-lote-info:last-child{border-bottom:none}
@@ -907,6 +1235,30 @@ select option{background:var(--bg2)}
 .import-info{color:var(--texto2)}
 .import-ok{color:var(--verde)}
 .import-err{color:var(--vermelho)}
+
+/* ── CONTROLES HEADER ── */
+.ctrl-grupo{
+  display:flex;align-items:center;gap:2px;
+  background:var(--bg3);
+  border:1px solid var(--borda);
+  border-radius:var(--r-sm);
+  padding:2px;
+}
+.ctrl-btn{
+  background:none;border:none;
+  color:var(--texto2);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:12px;font-weight:700;
+  padding:4px 8px;border-radius:4px;
+  cursor:pointer;
+  transition:background .15s,color .15s;
+  line-height:1;
+  -webkit-tap-highlight-color:transparent;
+}
+.ctrl-btn:hover,.ctrl-btn:active{
+  background:var(--bg4);
+  color:var(--texto);
+}
 
 /* ── FLASH ── */
 .flash{
@@ -934,9 +1286,17 @@ select option{background:var(--bg2)}
 <!-- HEADER -->
 <header class="header">
   <div class="logo">SeedBase <span class="logo-badge">RFID</span></div>
-  <div class="conn">
-    <div class="conn-dot" id="connDot"></div>
-    <span id="connTxt">Iniciando...</span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <!-- Controles de acessibilidade -->
+    <div class="ctrl-grupo">
+      <button class="ctrl-btn" onclick="diminuirFonte()" title="Diminuir letra">A-</button>
+      <button class="ctrl-btn" onclick="aumentarFonte()" title="Aumentar letra">A+</button>
+      <button class="ctrl-btn" id="btnTema" onclick="alternarTema()" title="Modo claro/escuro">🌙</button>
+    </div>
+    <div class="conn">
+      <div class="conn-dot" id="connDot"></div>
+      <span id="connTxt">Iniciando...</span>
+    </div>
   </div>
 </header>
 
@@ -945,8 +1305,8 @@ select option{background:var(--bg2)}
   <div class="nav-item active" id="nav-vincular" onclick="goTab('vincular')">
     <i class="ti ti-tag"></i>Vincular
   </div>
-  <div class="nav-item" id="nav-conferir" onclick="goTab('conferir')">
-    <i class="ti ti-truck"></i>Conferir
+  <div class="nav-item" id="nav-expedicao" onclick="goTab('expedicao')">
+    <i class="ti ti-truck"></i>Expedição
   </div>
   <div class="nav-item" id="nav-buscar" onclick="goTab('buscar')">
     <i class="ti ti-search"></i>Buscar
@@ -973,17 +1333,32 @@ select option{background:var(--bg2)}
   </div>
 
   <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-antenna"></i> Tag RFID</div>
+    <div class="secao-titulo"><i class="ti ti-antenna"></i> Tag NFC / RFID</div>
     <div class="campo">
-      <label>EPC da tag — aponte o leitor ou digite</label>
+      <label>EPC da tag</label>
       <div class="epc-wrap">
         <input class="epc-input" id="epcInput" type="text"
-          placeholder="Aguardando leitor HID..."
+          placeholder="Aproxime a tag ou digite o código..."
           autocomplete="off" autocorrect="off" spellcheck="false"
           oninput="onEpcInput(this.value)"/>
         <button class="epc-limpar" onclick="clearField('epcInput')">✕</button>
       </div>
       <div class="epc-status" id="epcStatus"></div>
+    </div>
+    <!-- Botão NFC -->
+    <button class="btn btn-nfc" id="btnNFC" onclick="lerNFC()">
+      <i class="ti ti-nfc"></i> Ler tag NFC
+    </button>
+    <!-- Dica iPhone -->
+    <div id="nfcDica" style="display:none" class="nfc-dica">
+      <div class="nfc-dica-titulo"><i class="ti ti-brand-apple"></i> No iPhone</div>
+      <div class="nfc-dica-texto">
+        O Safari não suporta Web NFC. Use assim:<br>
+        1. Baixe o app <strong>NFC Tools</strong> (gratuito)<br>
+        2. Leia a tag e copie o ID<br>
+        3. Cole no campo acima<br><br>
+        <strong>Ou:</strong> use o app <strong>Atalhos</strong> do iOS com automação NFC para abrir este app com o código preenchido.
+      </div>
     </div>
   </div>
 
@@ -1040,8 +1415,8 @@ select option{background:var(--bg2)}
   </button>
 </main>
 
-<!-- ══ CONFERIR ══ -->
-<main class="screen" id="screen-conferir">
+<!-- ══ EXPEDIÇÃO ══ -->
+<main class="screen" id="screen-expedicao">
   <div class="pg-titulo">Conferência</div>
   <div class="pg-sub">Registre e valide o carregamento</div>
 
