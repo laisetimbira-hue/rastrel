@@ -310,13 +310,41 @@ function cancelarPedido() {
 
 async function buscarBag() {
   if(!db){ flash('Configure o Firebase primeiro','err'); return; }
-  const q=g('buscaInput').value.trim().toUpperCase();
+  const raw = g('buscaInput').value.trim();
+  const q = raw.toUpperCase();
   if(!q){ flash('Digite um EPC ou número de bag','err'); return; }
   const el=g('buscaResult');
   el.innerHTML='<p class="vazio">Buscando...</p>';
-  let snap=await getDocs(query(collection(db,'bags'),where('epc','==',q)));
-  if(snap.empty) snap=await getDocs(query(collection(db,'bags'),where('numero_bag','==',q)));
-  if(snap.empty){ el.innerHTML='<div class="estado-vazio"><i class="ti ti-package-off"></i><p>Bag não encontrado</p></div>'; return; }
+
+  let snap = null;
+  try {
+    // Tenta por EPC (exato)
+    snap = await db.collection('bags').where('epc','==',q).get();
+    // Tenta por EPC original (sem toUpperCase)
+    if(snap.empty) snap = await db.collection('bags').where('epc','==',raw).get();
+    // Tenta por número do bag (uppercase)
+    if(snap.empty) snap = await db.collection('bags').where('numero_bag','==',q).get();
+    // Tenta por número do bag (original)
+    if(snap.empty) snap = await db.collection('bags').where('numero_bag','==',raw).get();
+    // Busca em todos os bags e filtra localmente (fallback)
+    if(snap.empty) {
+      const todos = await db.collection('bags').get();
+      const filtrado = todos.docs.filter(d => {
+        const data = d.data();
+        return (data.epc||'').toUpperCase().includes(q) ||
+               (data.numero_bag||'').toUpperCase().includes(q) ||
+               (data.produtor||'').toUpperCase().includes(q);
+      });
+      if(filtrado.length > 0) {
+        snap = { empty: false, docs: filtrado };
+      }
+    }
+  } catch(e) {
+    el.innerHTML='<div class="estado-vazio"><i class="ti ti-alert-triangle"></i><p>Erro na busca: '+e.message+'</p></div>';
+    return;
+  }
+
+  if(!snap || snap.empty){ el.innerHTML='<div class="estado-vazio"><i class="ti ti-package-off"></i><p>Bag não encontrado</p></div>'; return; }
   const bagDoc=snap.docs[0], bag=bagDoc.data();
   const movSnap=await getDocs(query(collection(db,'movimentacoes'),
     where('bag_id','==',bagDoc.id),orderBy('criado_em','desc'),limit(8)));
