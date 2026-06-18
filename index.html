@@ -894,83 +894,6 @@ async function carregarDashboard() {
   }
 };
 
-// ── IMPORTAÇÃO EM LOTE ──
-const LOTES_PILOTO = [
-  {
-    lote: '26S01A', cultivar_id: 'zeus', cultivar_nome: '55I57RSF IPRO — Zeus',
-    categoria: 'C1', peneira: 'P1', tratamento: 'SEM TSI',
-    peso_kg: 1000, produtor: 'RAUL BASSO', localizacao: 'A3B10', qtd: 20,
-  },
-  {
-    lote: '26S02G', cultivar_id: 'raio', cultivar_nome: '50I52RSF IPRO — Raio',
-    categoria: 'C2', peneira: 'P2', tratamento: 'SEM TSI',
-    peso_kg: 1000, produtor: 'RAUL BASSO', localizacao: 'A3B19', qtd: 20,
-  },
-  {
-    lote: '26S03C', cultivar_id: 'titanium', cultivar_nome: '56IX58RSF I2X — Titanium',
-    categoria: 'S1', peneira: 'P1', tratamento: 'TSI A',
-    peso_kg: 1000, produtor: 'RAUL BASSO', localizacao: 'A4B21', qtd: 20,
-  },
-];
-
-async function importarLotesPiloto() {
-  if (!db) { flash('Firebase não conectado','err'); return; }
-  if (!confirm('Cadastrar 60 bags de teste (20 por lote)?')) return;
-
-  const op  = localStorage.getItem('operador')    || 'Importação';
-  const dev = localStorage.getItem('dispositivo') || 'App';
-  let total = 0, erros = 0;
-
-  g('btnImportar').disabled = true;
-  g('btnImportar').textContent = 'Importando...';
-  g('importStatus').innerHTML = '';
-
-  for (const lote of LOTES_PILOTO) {
-    g('importStatus').innerHTML += `<div class="import-linha import-info">Importando lote ${lote.lote}...</div>`;
-    let ok = 0;
-    for (let i = 1; i <= lote.qtd; i++) {
-      const numero = lote.lote + '-' + String(i).padStart(2,'0');
-      // EPC simulado único por bag (para teste sem leitor físico)
-      const epc = 'SIM-' + lote.lote + '-' + String(i).padStart(2,'0');
-      // Verifica se já existe
-      const snap = await db.collection('bags').where('numero_bag','==',numero).get();
-      if (!snap.empty) { ok++; continue; }
-      try {
-        const ref = await db.collection('bags').add({
-          epc, numero_bag: numero,
-          cultivar_id: lote.cultivar_id,
-          cultivar_nome: lote.cultivar_nome,
-          categoria: lote.categoria,
-          peneira: lote.peneira,
-          tratamento: lote.tratamento,
-          peso_kg: lote.peso_kg,
-          produtor: lote.produtor,
-          localizacao_atual: lote.localizacao,
-          status: 'em_estoque',
-          criado_em: firebase.firestore.FieldValue.serverTimestamp(),
-          atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-        });
-        await db.collection('movimentacoes').add({
-          bag_id: ref.id, numero_bag: numero,
-          tipo_evento: 'vinculacao',
-          local_destino: lote.localizacao,
-          observacao: `Importação em lote — ${lote.lote}`,
-          operador: op, dispositivo: dev,
-          criado_em: firebase.firestore.FieldValue.serverTimestamp(),
-        });
-        ok++;
-      } catch(e) { erros++; }
-    }
-    total += ok;
-    g('importStatus').innerHTML += `<div class="import-linha import-ok">✓ Lote ${lote.lote} — ${ok} bags cadastrados</div>`;
-  }
-
-  g('btnImportar').disabled = false;
-  g('btnImportar').textContent = 'Importar 60 bags de teste';
-  g('importStatus').innerHTML += `<div class="import-linha import-ok" style="font-size:15px;font-weight:700;margin-top:8px">✓ Total: ${total} bags importados${erros>0?' ('+erros+' erros)':''}</div>`;
-  flash(total+' bags importados!','ok');
-}
-
 // ── LOTES ──
 let loteAtivo = null;
 
@@ -1259,6 +1182,11 @@ function corCultivar(cultivarId) {
 }
 
 async function carregarMapa() {
+  // O grid das 21 posições é sempre desenhado primeiro, independente do
+  // banco de dados responder ou não — assim a tela nunca fica em branco.
+  renderGrade('gradeCima',  CIMA,  {});
+  renderGrade('gradeBaixo', BAIXO, {});
+
   if(!db) return;
 
   try {
@@ -1281,6 +1209,7 @@ async function carregarMapa() {
       porPosicao[loc].push(b);
     }
 
+    // Redesenha agora com os dados reais, por cima do grid vazio inicial.
     renderGrade('gradeCima',  CIMA,  porPosicao);
     renderGrade('gradeBaixo', BAIXO, porPosicao);
 
@@ -1288,7 +1217,10 @@ async function carregarMapa() {
       flash('Mostrando última versão salva do mapa (offline)', 'warn');
     }
   } catch(e) {
-    flash('Não foi possível carregar o mapa — sem dados salvos localmente ainda', 'err');
+    // O grid já está desenhado (vazio) — aqui só avisa que os dados de
+    // ocupação não puderam ser carregados, sem deixar a tela em branco.
+    console.error('Erro ao carregar dados do mapa:', e);
+    flash('Mapa exibido, mas sem dados de ocupação — ' + (e.message || 'erro desconhecido'), 'warn');
   }
 }
 
@@ -2619,14 +2551,6 @@ select option{background:var(--bg2)}
 }
 .info-caixa-texto{font-size:0.875rem;color:var(--texto2);line-height:1.6}
 
-/* ── IMPORTAÇÃO ── */
-.import-lote-info{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--borda)}
-.import-lote-info:last-child{border-bottom:none}
-.import-linha{font-size:0.8125rem;padding:4px 0;font-family:'IBM Plex Mono',monospace}
-.import-info{color:var(--texto2)}
-.import-ok{color:var(--verde)}
-.import-err{color:var(--vermelho)}
-
 /* ── MISC ── */
 .mono{font-family:'IBM Plex Mono',monospace}
 .vazio{font-size:0.875rem;color:var(--texto2);padding:8px 0}
@@ -3474,37 +3398,13 @@ select option{background:var(--bg2)}
   <button class="btn btn-cinza" onclick="carregarDashboard()">
     <i class="ti ti-refresh"></i> Atualizar
   </button>
-
-  <div class="secao" style="margin-top:20px;border-color:rgba(79,142,247,.3)">
-    <div class="secao-titulo" style="color:var(--azul)"><i class="ti ti-database-import"></i> Importação — Piloto 60 bags</div>
-    <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
-      Cadastra automaticamente <strong style="color:var(--texto)">60 bags de teste</strong> divididos em 3 lotes de 20, com EPCs simulados para testar sem leitor físico.
-    </p>
-    <div style="margin-bottom:12px">
-      <div class="import-lote-info">
-        <span class="tag tag-azul">26S01A</span>
-        <span style="font-size:13px;color:var(--texto2);margin-left:8px">Zeus C1 · A3B10 · 20 bags</span>
-      </div>
-      <div class="import-lote-info">
-        <span class="tag tag-verde">26S02G</span>
-        <span style="font-size:13px;color:var(--texto2);margin-left:8px">Raio C2 · A3B19 · 20 bags</span>
-      </div>
-      <div class="import-lote-info">
-        <span class="tag tag-amarelo">26S03C</span>
-        <span style="font-size:13px;color:var(--texto2);margin-left:8px">Titanium S1 · A4B21 · 20 bags</span>
-      </div>
-    </div>
-    <button class="btn btn-azul" id="btnImportar" onclick="importarLotesPiloto()">
-      <i class="ti ti-database-import"></i> Importar 60 bags de teste
-    </button>
-    <div id="importStatus" style="margin-top:12px"></div>
-  </div>
 </main>
 
 <!-- ══ CONFIG ══ -->
 <main class="screen" id="screen-config">
   <div class="pg-titulo">Configurações</div>
   <div class="pg-sub">Firebase, operador e leitor RFID</div>
+
 
   <div class="secao">
     <div class="secao-titulo"><i class="ti ti-brand-firebase"></i> Firebase</div>
