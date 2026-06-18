@@ -378,8 +378,14 @@ async function atualizarInfoPosicao() {
 }
 
 function preencherCultivares() {
-  g('cultivarSelect').innerHTML='<option value="">Selecione a cultivar...</option>'+
-    CULTIVARES.map(c=>`<option value="${c.id}">${c.nome}${c.fantasia?' — '+c.fantasia:''}</option>`).join('');
+  // Datalist compartilhada entre o campo de Lotes e o campo de Vincular —
+  // serve só como sugestão; o operador pode digitar qualquer nome.
+  const dl = g('listaCultivares');
+  if (dl) {
+    dl.innerHTML = CULTIVARES.map(c=>
+      `<option value="${c.nome}${c.fantasia?' — '+c.fantasia:''}"></option>`
+    ).join('');
+  }
 }
 function getCultivarNome(id) {
   const c=CULTIVARES.find(x=>x.id===id);
@@ -1006,13 +1012,6 @@ async function carregarLotes() {
       <div class="prog-txt">${comTag} de ${total} tags vinculadas (${pct}%)</div>
     </div>`;
   }).join('');
-
-  // Popular select de cultivares na tela de lotes também
-  const ltSel = g('ltCultivar');
-  if(ltSel && ltSel.children.length<=1){
-    ltSel.innerHTML='<option value="">Selecione...</option>'+
-      CULTIVARES.map(c=>`<option value="${c.id}">${c.nome}${c.fantasia?' — '+c.fantasia:''}</option>`).join('');
-  }
 }
 
 async function abrirLote(numero) {
@@ -2977,7 +2976,8 @@ select option{background:var(--bg2)}
     </div>
     <div class="campo">
       <label>Cultivar *</label>
-      <select id="ltCultivar"></select>
+      <input id="ltCultivar" type="text" placeholder="Ex: Zeus, 55I57RSF IPRO..." list="listaCultivares"/>
+      <datalist id="listaCultivares"></datalist>
     </div>
     <div class="campo-linha">
       <div>
@@ -3170,7 +3170,7 @@ select option{background:var(--bg2)}
     </div>
     <div class="campo">
       <label>Cultivar *</label>
-      <select id="cultivarSelect"></select>
+      <input id="cultivarSelect" type="text" placeholder="Ex: Zeus, 55I57RSF IPRO..." list="listaCultivares"/>
     </div>
     <div class="campo-linha">
       <div>
