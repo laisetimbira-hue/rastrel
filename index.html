@@ -368,12 +368,13 @@ async function atualizarInfoPosicao() {
     .where('localizacao_atual','==',pos)
     .where('status','in',['em_estoque','aguardando_tag']).get();
   const lotes = new Set(snap.docs.map(d=>d.data().lote||d.id));
-  const livre = 6 - lotes.size;
-  const posLabel = lotes.size===0?'fundo (1° lote)':lotes.size===1?'meio (2° lote)':lotes.size===2?'frente (3° lote)':`posição ${lotes.size+1}`;
+  const cap = capacidadeDaPosicao(pos);
+  const livre = cap - lotes.size;
+  const posLabel = labelPosicaoSlot(lotes.size, cap);
   if(livre > 0){
-    info.innerHTML = `<span style="color:var(--verde)">✓ ${lotes.size}/6 lotes — vai para o <strong>${posLabel}</strong></span>`;
+    info.innerHTML = `<span style="color:var(--verde)">✓ ${lotes.size}/${cap} lotes — vai para o <strong>${posLabel}</strong></span>`;
   } else {
-    info.innerHTML = `<span style="color:var(--vermelho)">✗ Posição cheia (6/6 lotes)</span>`;
+    info.innerHTML = `<span style="color:var(--vermelho)">✗ Posição cheia (${cap}/${cap} lotes)</span>`;
   }
 }
 
@@ -433,18 +434,74 @@ function fecharDrawer() {
 
 function onEpcInput(val) {
   clearTimeout(epcTimer);
-  const st=g('epcStatus');
+  const st = g('epcStatus');
+  // Esconde listas enquanto digita
+  g('secBagsPendentes').style.display = 'none';
+  g('secSemPendentes').style.display  = 'none';
   if(!val){ st.textContent=''; return; }
-  st.textContent='Aguardando...';
-  epcTimer=setTimeout(()=>{
-    const epc=val.trim().replace(/[\n\r]/g,'');
-    if(epc.length>=4){
-      g('epcInput').value=epc;
-      st.innerHTML='<span class="ok-text"><i class="ti ti-check"></i> EPC: '+epc+'</span>';
-      g('numeroBag').focus();
+  st.textContent = 'Aguardando...';
+  epcTimer = setTimeout(async () => {
+    const epc = val.trim().replace(/[\n\r]/g,'');
+    if(epc.length < 4) return;
+    g('epcInput').value = epc;
+
+    if(!db){ st.textContent='Firebase não conectado'; return; }
+
+    // Verificar se tag já está vinculada a algum bag
+    const snapEpc = await db.collection('bags').where('epc','==',epc).get();
+    if(!snapEpc.empty){
+      const bagExiste = snapEpc.docs[0].data();
+      st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
+      return;
     }
-  },400);
+
+    st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag livre — selecione o bag abaixo</span>';
+    await carregarBagsPendentes(epc);
+  }, 400);
 };
+
+async function carregarBagsPendentes(epc) {
+  if(!db) return;
+  const snap = await db.collection('bags')
+    .where('status','==','aguardando_tag')
+    .orderBy('numero_bag').get();
+
+  if(snap.empty){
+    g('secBagsPendentes').style.display = 'none';
+    g('secSemPendentes').style.display  = 'block';
+    return;
+  }
+
+  // Agrupar por lote
+  const lotesMap = {};
+  snap.docs.forEach(d => {
+    const b = { id: d.id, ...d.data() };
+    const lote = b.lote || b.numero_bag?.split('-')[0] || '—';
+    if(!lotesMap[lote]) lotesMap[lote] = { lote, cultivar: b.cultivar_nome||'—', bags: [] };
+    lotesMap[lote].bags.push(b);
+  });
+
+  const html = Object.values(lotesMap).map(lt => `
+    <div style="margin-bottom:14px">
+      <div class="secao-label" style="margin-bottom:6px">
+        ${lt.lote} — ${lt.cultivar}
+      </div>
+      ${lt.bags.map(b => `
+        <div class="linha-item" style="cursor:pointer;-webkit-tap-highlight-color:transparent"
+          onclick="vincularBagAo('${b.id}','${b.numero_bag}')">
+          <div>
+            <span class="item-num">${b.numero_bag}</span>
+            <span class="item-sub">${b.localizacao_atual||'Sem posição'}</span>
+          </div>
+          <span class="tag tag-azul">Vincular</span>
+        </div>`).join('')}
+    </div>`).join('');
+
+  g('listaBagsPendentes').innerHTML = html;
+  g('secBagsPendentes').style.display = 'block';
+  g('secSemPendentes').style.display  = 'none';
+}
+
 function onEpcCarga(val) {
   clearTimeout(epcTimer);
   epcTimer=setTimeout(async()=>{
@@ -458,123 +515,76 @@ function clearField(id) {
   g(id).focus();
 };
 
-async function vincularBag() {
-  if(!db){ flash('Configure o Firebase primeiro','err'); return; }
-  const epc    = g('epcInput').value.trim();
-  const numero = g('numeroBag').value.trim().toUpperCase();
-  if(!epc){ flash('Leia a tag NFC primeiro','err'); return; }
+async function vincularBagAo(bagId, numeroBag) {
+  if(!db) return;
+  const epc = g('epcInput').value.trim();
+  if(!epc){ flash('Leia a tag primeiro','err'); return; }
 
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
-  const offlineNoMomento = !navigator.onLine;
 
-  if (offlineNoMomento) {
-    adicionarNaFila('Vinculação de tag — EPC ' + epc);
-  }
+  if(!navigator.onLine) adicionarNaFila('Vinculação — ' + numeroBag);
 
-  // Verificar se EPC já usado
-  // ATENÇÃO: offline, esta verificação só encontra bags já carregados no
-  // cache deste dispositivo. Duplicidade entre dispositivos diferentes só
-  // é detectada quando a conexão voltar e o Firestore sincronizar.
+  // Confirmar de novo que o EPC ainda está livre (race condition entre dois celulares)
   const snapEpc = await db.collection('bags').where('epc','==',epc).get();
   if(!snapEpc.empty){
-    flash('Tag já vinculada ao bag '+snapEpc.docs[0].data().numero_bag,'warn');
-    return;
-  }
-
-  // Tentar encontrar bag aguardando tag pelo número gravado na tag
-  // (a tag NFC foi gravada com o número do bag pelo NFC Tools)
-  let bagExistente = null;
-  if(epc && epc.length > 2){
-    // Busca pelo conteúdo gravado na tag (número do bag)
-    const snapNum = await db.collection('bags')
-      .where('numero_bag','==', epc.toUpperCase())
-      .where('status','==','aguardando_tag').get();
-    if(!snapNum.empty) bagExistente = { id: snapNum.docs[0].id, ...snapNum.docs[0].data() };
-  }
-  // Também tenta pelo número digitado manualmente
-  if(!bagExistente && numero){
-    const snapNum2 = await db.collection('bags')
-      .where('numero_bag','==', numero)
-      .where('status','==','aguardando_tag').get();
-    if(!snapNum2.empty) bagExistente = { id: snapNum2.docs[0].id, ...snapNum2.docs[0].data() };
-  }
-
-  if(bagExistente){
-    // ✅ BAG JÁ EXISTE NO LOTE — só vincular a tag
-    await db.collection('bags').doc(bagExistente.id).update({
-      epc,
-      status: 'em_estoque',
-      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-    await db.collection('movimentacoes').add({
-      bag_id: bagExistente.id, numero_bag: bagExistente.numero_bag,
-      tipo_evento:'vinculacao',
-      local_destino: bagExistente.localizacao_atual,
-      observacao: `Tag NFC vinculada — EPC ${epc}`,
-      operador:op, dispositivo:dev,
-      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-    flash('✓ '+bagExistente.numero_bag+' — tag vinculada!','ok');
-    // Mostrar próximo pendente do mesmo lote
-    mostrarProximoPendente(bagExistente.lote, bagExistente.numero_bag);
+    flash('Tag já foi vinculada por outro dispositivo — leia uma nova tag','err');
     limparVincular();
     return;
   }
 
-  // CADASTRO MANUAL (bag novo, não veio de lote)
-  const cultivarId = g('cultivarSelect').value;
-  if(!numero)     { flash('Informe o número do bag','err'); return; }
-  if(!cultivarId) { flash('Selecione a cultivar','err'); return; }
-  const loc = g('localizacao').value.trim() || 'Armazém';
-  const ref = await db.collection('bags').add({
-    epc, numero_bag:numero, cultivar_id:cultivarId,
-    cultivar_nome:getCultivarNome(cultivarId),
-    categoria:g('categoriaSelect').value,
-    peneira:g('peneira').value.trim(),
-    tratamento:g('tratamento').value.trim(),
-    peso_kg:parseFloat(g('peso').value)||null,
-    produtor:g('produtor').value.trim(),
-    localizacao_atual:loc, status:'em_estoque',
-    criado_em:firebase.firestore.FieldValue.serverTimestamp(),
-    atualizado_em:firebase.firestore.FieldValue.serverTimestamp(),
-  });
-  await db.collection('movimentacoes').add({
-    bag_id:ref.id, numero_bag:numero, tipo_evento:'vinculacao',
-    local_destino:loc, observacao:`Bag ${numero} vinculado — EPC ${epc}`,
-    operador:op, dispositivo:dev,
-    criado_em:firebase.firestore.FieldValue.serverTimestamp(),
-  });
-  flash('Bag '+numero+' vinculado!','ok');
-  limparVincular();
-}
+  const snap = await db.collection('bags').doc(bagId).get();
+  if(!snap.exists){ flash('Bag não encontrado','err'); return; }
+  const bag = snap.data();
 
-async function mostrarProximoPendente(lote, atual) {
-  if(!lote||!db) return;
-  const snap = await db.collection('bags')
-    .where('lote','==',lote)
-    .where('status','==','aguardando_tag').get();
-  if(snap.empty){
-    flash('✅ Lote '+lote+' completo — todos os bags vinculados!','ok');
+  if(bag.status !== 'aguardando_tag'){
+    flash('Bag ' + numeroBag + ' já foi vinculado — selecione outro','warn');
+    await carregarBagsPendentes(epc);
     return;
   }
-  const bags = snap.docs.map(d=>d.data()).sort((a,b)=>a.numero_bag.localeCompare(b.numero_bag));
-  const proximo = bags[0];
-  // Mostrar banner com próximo
-  const info = g('proximoInfo');
-  const infoTxt = g('proximoInfoTxt');
-  if(info && infoTxt){
-    infoTxt.innerHTML = `<strong>Próximo:</strong> ${proximo.numero_bag} — aproxime a tag NFC`;
-    info.style.display='flex';
+
+  await db.collection('bags').doc(bagId).update({
+    epc,
+    status: 'em_estoque',
+    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  await db.collection('movimentacoes').add({
+    bag_id: bagId, numero_bag: numeroBag,
+    tipo_evento: 'vinculacao',
+    local_destino: bag.localizacao_atual || '',
+    observacao: `Tag vinculada — UID ${epc}`,
+    operador: op, dispositivo: dev,
+    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
+  limparVincular();
+
+  // Verificar se ainda há bags pendentes no mesmo lote
+  const snapPend = await db.collection('bags')
+    .where('lote','==', bag.lote||'')
+    .where('status','==','aguardando_tag').get();
+  if(snapPend.empty && bag.lote){
+    flash('✅ Lote ' + bag.lote + ' completo — todos os bags vinculados!', 'ok');
   }
-};
-function limparVincular() {
-  ['epcInput','numeroBag','peneira','tratamento','peso','localizacao','produtor'].forEach(id=>g(id).value='');
-  g('epcStatus').textContent='';
-  g('cultivarSelect').value='';
-  g('categoriaSelect').value='C1';
-  g('epcInput').focus();
 }
+
+async function vincularBag() {
+  // Mantido para compatibilidade, não é mais chamado pelo HTML novo
+  flash('Use a lista abaixo para selecionar o bag', 'warn');
+}
+
+function limparVincular() {
+  const inp = g('epcInput');
+  if(inp) inp.value = '';
+  const st = g('epcStatus');
+  if(st) st.textContent = '';
+  g('secBagsPendentes').style.display = 'none';
+  g('secSemPendentes').style.display  = 'none';
+  const inp2 = g('epcInput');
+  if(inp2) inp2.focus();
+}
+
 
 async function criarPedido() {
   if(!db){ flash('Configure o Firebase primeiro','err'); return; }
@@ -1154,8 +1164,18 @@ async function carregarExpedicoesDo(lote, bags) {
 }
 
 // ── MAPA ARMAZÉM 3 ──
-// Estrutura: cada posição comporta 6 bags (3x2)
-const CAPACIDADE_POSICAO = 6;
+// Lado B (B1–B10): tabela de 2 colunas × 5 linhas por pilha. Numeração
+// em ziguezague: coluna esquerda 1ª a 5ª (topo→base), coluna direita
+// 6ª a 10ª (topo→base). Topo = lado da Frente (corredor); base = Fundo
+// (parede). Total: 10 posições por pilha.
+const CAPACIDADE_POSICAO = 10;
+const LINHAS_POSICAO = 5;
+const COLUNAS_POSICAO = 2;
+
+// Lado A (B11–B21): mesma lógica de tabela, porém menor — 2 colunas ×
+// 3 linhas, 6 posições por pilha. Frente também é o topo da tabela.
+const CAPACIDADE_POSICAO_A = 6;
+const LINHAS_POSICAO_A = 3;
 
 // Lado de cima: B11 → B21 (esquerda para direita)
 const CIMA  = Array.from({length:11}, (_,i) => `A3B${i+11}`);
@@ -1180,10 +1200,23 @@ function corCultivar(cultivarId) {
   return CULT_CORES[cultivarId] || '#8899b4';
 }
 
+// Gera a descrição textual da posição com base no índice de chegada (0-based).
+// Estrutura é uma tabela 2×5 — a posição é simplesmente "Nª de 10",
+// sem mais distinção categórica entre fundo e frente.
+function labelPosicaoSlot(indice, capacidade=CAPACIDADE_POSICAO) {
+  return `${indice+1}ª de ${capacidade}`;
+}
+
+// Devolve a capacidade real de uma posição, considerando que o Lado A
+// (B11–B21) tem 6 lugares por pilha e o Lado B (B1–B10) tem 10.
+function capacidadeDaPosicao(pos) {
+  return CIMA.includes(pos) ? CAPACIDADE_POSICAO_A : CAPACIDADE_POSICAO;
+}
+
 async function carregarMapa() {
   // O grid das 21 posições é sempre desenhado primeiro, independente do
   // banco de dados responder ou não — assim a tela nunca fica em branco.
-  renderGrade('gradeCima',  CIMA,  {});
+  renderGrade('gradeCima',  CIMA,  {}, CAPACIDADE_POSICAO_A, LINHAS_POSICAO_A);
   renderGrade('gradeBaixo', BAIXO, {});
 
   if(!db) return;
@@ -1209,7 +1242,7 @@ async function carregarMapa() {
     }
 
     // Redesenha agora com os dados reais, por cima do grid vazio inicial.
-    renderGrade('gradeCima',  CIMA,  porPosicao);
+    renderGrade('gradeCima',  CIMA,  porPosicao, CAPACIDADE_POSICAO_A, LINHAS_POSICAO_A);
     renderGrade('gradeBaixo', BAIXO, porPosicao);
 
     if (!navigator.onLine) {
@@ -1223,7 +1256,7 @@ async function carregarMapa() {
   }
 }
 
-function renderGrade(elId, posicoes, porPosicao) {
+function renderGrade(elId, posicoes, porPosicao, capacidade=CAPACIDADE_POSICAO, linhas=LINHAS_POSICAO) {
   const el = g(elId);
   if(!el) return;
 
@@ -1259,15 +1292,15 @@ function renderGrade(elId, posicoes, porPosicao) {
       return sa - sb; // menor = chegou primeiro = fundo
     });
 
-    // Montar array de 6 slots
-    const slots = Array(6).fill(null);
+    // Montar array de slots (tamanho varia por lado — ver parâmetro `capacidade`)
+    const slots = Array(capacidade).fill(null);
     // Lotes com slot definido vão para o slot deles
     for(const lt of lotes){
-      if(lt.slot_posicao != null && lt.slot_posicao < 6 && !slots[lt.slot_posicao]){
+      if(lt.slot_posicao != null && lt.slot_posicao < capacidade && !slots[lt.slot_posicao]){
         slots[lt.slot_posicao] = lt;
       }
     }
-    // Lotes sem slot preenchem os vazios em ordem
+    // Lotes sem slot preenchem os vazios em ordem (fundo primeiro, depois frente)
     for(const lt of lotes){
       if(lt.slot_posicao == null || slots[lt.slot_posicao] !== lt){
         const idx = slots.indexOf(null);
@@ -1279,41 +1312,39 @@ function renderGrade(elId, posicoes, porPosicao) {
     const totalLotes = lotes.length;
 
     const renderSlot = (lt, idx) => {
-      if(!lt) return `<div class="slot slot-vazio"
+      if(!lt) return `<td class="cel-slot cel-vazia"
         onclick="event.stopPropagation();abrirSlot('${pos}',${idx})">
-        <span class="slot-vazio-txt">+</span>
-      </div>`;
+        <span class="cel-vazia-txt">+</span>
+      </td>`;
       const cor = corCultivar(lt.cultivar_id);
       const nome = (lt.cultivar_nome||'').split('—')[1]?.trim() ||
                    (lt.cultivar_nome||'').split(' ')[0] || '?';
-      return `<div class="slot slot-ocupado" style="background:${cor}22;border-color:${cor}66"
+      return `<td class="cel-slot cel-ocupada" style="background:${cor}22"
         onclick="event.stopPropagation();abrirSlotLote('${lt.lote}','${pos}',${idx})">
-        <div class="slot-cultivar" style="color:${cor}">${nome}</div>
-        <div class="slot-lote">${lt.lote}</div>
-        <div class="slot-bags">${lt.qtd_bags}bg</div>
-      </div>`;
+        <div class="cel-cultivar" style="color:${cor}">${nome}</div>
+        <div class="cel-lote">${lt.lote}</div>
+      </td>`;
     };
+
+    // Numeração em ziguezague: linha 0 = posições 1ª e (linhas+1)ª,
+    // linha 1 = 2ª e (linhas+2)ª, ... última linha = Nª e capacidadeª.
+    let linhasHtml = '';
+    for(let l=0; l<linhas; l++){
+      const idxEsquerda = l;
+      const idxDireita  = l + linhas;
+      linhasHtml += `<tr>${renderSlot(slots[idxEsquerda], idxEsquerda)}${renderSlot(slots[idxDireita], idxDireita)}</tr>`;
+    }
 
     return `<div class="posicao-nova" onclick="abrirPosicao('${pos}')">
       <div class="posicao-nova-header">
         <span class="posicao-nova-num">${numLabel}</span>
-        <span class="posicao-nova-qtd">${totalLotes}/6</span>
+        <span class="posicao-nova-qtd">${totalLotes}/${capacidade}</span>
       </div>
-      <div class="posicao-grid">
-        <div class="posicao-col">
-          ${renderSlot(slots[0],0)}
-          ${renderSlot(slots[1],1)}
-          ${renderSlot(slots[2],2)}
-        </div>
-        <div class="posicao-col">
-          ${renderSlot(slots[3],3)}
-          ${renderSlot(slots[4],4)}
-          ${renderSlot(slots[5],5)}
-        </div>
-      </div>
-      <div class="posicao-nova-labels">
-        <span>fundo</span><span>frente</span>
-      </div>
+      <div class="posicao-label-frente">Frente</div>
+      <table class="posicao-tabela">
+        <tbody>${linhasHtml}</tbody>
+      </table>
+      <div class="posicao-label-fundo">fundo</div>
     </div>`;
   }).join('');
 }
@@ -1326,10 +1357,11 @@ async function abrirPosicao(pos) {
     .get();
 
   const bags = snap.docs.map(d=>({id:d.id,...d.data()}));
-  const livre = CAPACIDADE_POSICAO - bags.length;
+  const cap = capacidadeDaPosicao(pos);
+  const livre = cap - bags.length;
 
   g('modalTitulo').textContent  = pos;
-  g('modalTotal').textContent   = CAPACIDADE_POSICAO;
+  g('modalTotal').textContent   = cap;
   g('modalOcupado').textContent = bags.length;
   g('modalLivre').textContent   = Math.max(0, livre);
 
@@ -1418,7 +1450,7 @@ async function moverParcialLote(lote, pos) {
     if(loc) { if(!porPos[loc]) porPos[loc]=new Set(); porPos[loc].add(d.data().lote||d.id); }
   });
   const posicoesDisp = [...CIMA,...BAIXO]
-    .filter(p=>p!==pos && (!porPos[p] || porPos[p].size < 6))
+    .filter(p=>p!==pos && (!porPos[p] || porPos[p].size < capacidadeDaPosicao(p)))
     .slice(0,12);
 
   // Montar modal de seleção
@@ -1436,7 +1468,7 @@ async function moverParcialLote(lote, pos) {
 
   const posOpcoes = posicoesDisp.map(p=>{
     const qtdLotes = porPos[p]?.size||0;
-    return `<option value="${p}">${p.replace('A3B','B')} (${qtdLotes}/6 lotes)</option>`;
+    return `<option value="${p}">${p.replace('A3B','B')} (${qtdLotes}/${capacidadeDaPosicao(p)} lotes)</option>`;
   }).join('');
 
   g('modalTitulo').textContent  = 'Mover bags — '+lote;
@@ -1592,7 +1624,7 @@ async function abrirSlot(pos, slotIdx) {
   // Calcular quantos lotes já tem para mostrar posição
   const snapPos = await db.collection('bags').where('localizacao_atual','==',pos).get();
   const lotesNoLocal = new Set(snapPos.docs.map(d=>d.data().lote||d.id)).size;
-  const posLabel = lotesNoLocal===0?'fundo (1°)':lotesNoLocal===1?'meio (2°)':lotesNoLocal===2?'frente (3°)':`posição ${lotesNoLocal+1}`;
+  const posLabel = labelPosicaoSlot(lotesNoLocal, capacidadeDaPosicao(pos));
 
   g('modalTitulo').textContent  = `${pos}`;
   g('modalTotal').textContent   = '—';
@@ -1611,11 +1643,11 @@ async function alocarLoteNoPosicao(lote, pos) {
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
 
-  // Contar lotes já na posição para definir ordem (fundo=0, meio=1, frente=2...)
+  // Contar lotes já na posição para definir ordem de chegada
   const snapPos = await db.collection('bags').where('localizacao_atual','==',pos).get();
   const lotesJa = new Set(snapPos.docs.map(d=>d.data().lote||d.id));
   const ordemChegada = lotesJa.size;
-  const posLabel = ordemChegada===0?'fundo':ordemChegada===1?'meio':ordemChegada===2?'frente':`posição ${ordemChegada+1}`;
+  const posLabel = labelPosicaoSlot(ordemChegada, capacidadeDaPosicao(pos));
 
   // Buscar todos os bags do lote
   const snapLote = await db.collection('bags').where('lote','==',lote).get();
@@ -1662,7 +1694,8 @@ async function alocarBagNoSlot(bagId, pos, slotIdx) {
   const snap = await db.collection('bags')
     .where('localizacao_atual','==', pos).get();
   const lotesExistentes = new Set(snap.docs.map(d=>d.data().lote||d.id));
-  const ordemChegada = lotesExistentes.size; // 0=fundo, 1=meio, 2=frente...
+  const ordemChegada = lotesExistentes.size;
+  const posLabel = labelPosicaoSlot(ordemChegada, capacidadeDaPosicao(pos));
 
   await db.collection('bags').doc(bagId).update({
     localizacao_atual: pos,
@@ -1673,13 +1706,13 @@ async function alocarBagNoSlot(bagId, pos, slotIdx) {
   await db.collection('movimentacoes').add({
     bag_id: bagId, tipo_evento: 'entrada_armazem',
     local_destino: pos,
-    observacao: `Alocado em ${pos} — posição ${ordemChegada+1} (${ordemChegada===0?'fundo':ordemChegada===1?'meio':'frente'})`,
+    observacao: `Alocado em ${pos} — ${posLabel}`,
     operador: op, dispositivo: dev,
     criado_em: firebase.firestore.FieldValue.serverTimestamp(),
   });
 
   fecharModal();
-  flash(`Lote alocado em ${pos} — ${ordemChegada===0?'fundo':ordemChegada===1?'meio':'frente'}!`, 'ok');
+  flash(`Lote alocado em ${pos} — ${posLabel}!`, 'ok');
   carregarMapa();
 }
 
@@ -1969,11 +2002,6 @@ function g(id){ return document.getElementById(id); }
 
 // ── LOTES ──
 
-
-
-
-// ── MAPA ARMAZÉM 3 ──
-// Estrutura: cada posição comporta 6 bags (3x2)
 window.onEpcDesvincular = function(val) {
   clearTimeout(epcDesvinculaTimer);
   const st = g('epcDesvinculaStatus');
@@ -2640,23 +2668,41 @@ select option{background:var(--bg2)}
 /* ── MAPA ── */
 .mapa-container{margin-bottom:16px}
 .mapa-label-lado{
+  display:flex;align-items:center;justify-content:space-between;
   font-family:'Barlow Condensed',sans-serif;
   font-size:12px;font-weight:700;
   color:var(--texto3);text-transform:uppercase;
   letter-spacing:.5px;margin-bottom:6px;margin-top:12px;
 }
+.mapa-scroll-dica{
+  display:flex;align-items:center;gap:4px;
+  font-size:11px;font-weight:600;color:var(--azul);
+  text-transform:none;letter-spacing:0;
+  opacity:.8;
+}
+.mapa-scroll-dica i{font-size:14px}
 .mapa-grade{
-  display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(100px,1fr));
-  gap:8px;
+  display:flex;
+  gap:10px;
   margin-bottom:4px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  padding-bottom:8px;
+  /* Scroll suave e com "trava" em cada card no mobile */
+  scroll-snap-type:x proximity;
+  -webkit-overflow-scrolling:touch;
+}
+.mapa-grade .posicao-nova{
+  flex:0 0 auto;
+  width:148px;
+  scroll-snap-align:start;
 }
 /* Posição nova com grid de slots */
 .posicao-nova{
   background:var(--bg2);
   border:1px solid var(--borda);
   border-radius:var(--r-sm);
-  padding:8px;
+  padding:10px;
   cursor:pointer;
   transition:border-color .15s;
   -webkit-tap-highlight-color:transparent;
@@ -2664,67 +2710,73 @@ select option{background:var(--bg2)}
 .posicao-nova:active{border-color:var(--azul);transform:scale(.98)}
 .posicao-nova-header{
   display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:6px;
+  margin-bottom:8px;
 }
 .posicao-nova-num{
   font-family:'Barlow Condensed',sans-serif;
-  font-size:15px;font-weight:800;color:var(--texto);
+  font-size:19px;font-weight:800;color:var(--texto);
 }
 .posicao-nova-qtd{
   font-family:'IBM Plex Mono',monospace;
-  font-size:10px;color:var(--texto3);
+  font-size:12px;color:var(--texto3);
 }
-.posicao-nova-labels{
-  display:flex;justify-content:space-between;
-  font-size:9px;color:var(--texto3);
+.posicao-label-frente{
+  text-align:center;
   font-family:'Barlow Condensed',sans-serif;
-  font-weight:600;text-transform:uppercase;letter-spacing:.3px;
+  font-size:12px;font-weight:700;color:var(--texto2);
+  text-transform:uppercase;letter-spacing:.4px;
+  margin-bottom:4px;
+}
+.posicao-label-fundo{
+  text-align:center;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:11px;font-weight:600;color:var(--texto3);
+  text-transform:lowercase;letter-spacing:.4px;
   margin-top:4px;
 }
-.posicao-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:3px;
+/* Tabela 2 colunas × 5 linhas, com bordas visíveis como um mapa físico */
+.posicao-tabela{
+  width:100%;
+  border-collapse:collapse;
+  table-layout:fixed;
 }
-.posicao-col{
-  display:flex;flex-direction:column;gap:3px;
+.posicao-tabela td{
+  border:1px solid var(--borda2);
 }
-/* Slots individuais */
-.slot{
-  border-radius:4px;
-  padding:4px 5px;
-  min-height:36px;
-  display:flex;flex-direction:column;justify-content:center;
+.cel-slot{
+  position:relative;
+  height:44px;
+  padding:3px 5px;
+  text-align:left;
+  vertical-align:middle;
+  cursor:pointer;
   transition:opacity .15s,transform .1s;
   -webkit-tap-highlight-color:transparent;
 }
-.slot:active{opacity:.7;transform:scale(.95)}
-.slot-vazio{
+.cel-slot:active{opacity:.7}
+.cel-vazia{
   background:var(--bg4);
-  border:1px dashed var(--borda2);
-  align-items:center;justify-content:center;
 }
-.slot-vazio-txt{
-  font-size:16px;color:var(--texto3);line-height:1;
+.cel-vazia-txt{
+  position:absolute;right:7px;top:50%;
+  transform:translateY(-50%);
+  font-size:17px;color:var(--texto3);line-height:1;
 }
-.slot-ocupado{
-  border:1px solid;
+.cel-ocupada{
+  background:var(--bg3);
 }
-.slot-cultivar{
+.cel-cultivar{
   font-family:'Barlow Condensed',sans-serif;
-  font-size:11px;font-weight:800;
+  font-size:14px;font-weight:800;
   line-height:1.2;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;
+  padding-left:4px;
 }
-.slot-lote{
+.cel-lote{
   font-family:'IBM Plex Mono',monospace;
-  font-size:9px;color:var(--texto2);
+  font-size:11px;color:var(--texto2);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  margin-top:1px;
-}
-.slot-bags{
-  font-size:9px;color:var(--texto3);
-  font-family:'IBM Plex Mono',monospace;
+  padding-left:4px;
 }
 .mapa-corredor{
   text-align:center;
@@ -2909,7 +2961,10 @@ select option{background:var(--bg2)}
   <div class="mapa-container" id="mapaArmazem3">
 
     <!-- Lado de cima: B11 → B21 (esquerda para direita) -->
-    <div class="mapa-label-lado">Lado A — B11 a B21</div>
+    <div class="mapa-label-lado">
+      Lado A — B11 a B21
+      <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+    </div>
     <div class="mapa-grade" id="gradeCima"></div>
 
     <!-- Corredor -->
@@ -2920,7 +2975,10 @@ select option{background:var(--bg2)}
     </div>
 
     <!-- Lado de baixo: B10 → B1 (direita para esquerda) -->
-    <div class="mapa-label-lado">Lado B — B10 a B1</div>
+    <div class="mapa-label-lado">
+      Lado B — B10 a B1
+      <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+    </div>
     <div class="mapa-grade" id="gradeBaixo"></div>
 
     <!-- Entrada -->
@@ -3114,15 +3172,7 @@ select option{background:var(--bg2)}
 
 <main class="screen active" id="screen-vincular">
   <div class="pg-titulo">Vincular tag</div>
-  <div class="pg-sub">Aproxime a tag NFC do celular para vincular</div>
-
-  <!-- Banner próximo bag pendente -->
-  <div id="proximoInfo" style="display:none;align-items:center;gap:10px;
-    background:var(--verde-dim);border:1px solid rgba(52,211,153,.3);
-    border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:15px;color:var(--texto)">
-    <i class="ti ti-arrow-right" style="color:var(--verde);font-size:20px;flex-shrink:0"></i>
-    <span id="proximoInfoTxt">—</span>
-  </div>
+  <div class="pg-sub">Aproxime a tag NFC do bag para vincular</div>
 
   <div id="banner" class="banner">
     <i class="ti ti-alert-triangle"></i>
@@ -3132,111 +3182,71 @@ select option{background:var(--bg2)}
     </div>
   </div>
 
+  <!-- Leitura da tag -->
   <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-antenna"></i> Tag NFC / RFID</div>
-    <div class="campo">
-      <label>EPC da tag</label>
-      <div class="epc-wrap">
-        <input class="epc-input" id="epcInput" type="text"
-          placeholder="Aproxime a tag ou digite o código..."
-          autocomplete="off" autocorrect="off" spellcheck="false"
-          oninput="onEpcInput(this.value)"/>
-        <button class="epc-limpar" onclick="clearField('epcInput')">✕</button>
-      </div>
-      <div class="epc-status" id="epcStatus"></div>
+    <div class="secao-titulo"><i class="ti ti-antenna"></i> Tag NFC</div>
+    <div class="epc-wrap">
+      <input class="epc-input" id="epcInput" type="text"
+        placeholder="Aproxime a tag ou cole o UID aqui..."
+        autocomplete="off" autocorrect="off" spellcheck="false"
+        oninput="onEpcInput(this.value)"/>
+      <button class="epc-limpar" onclick="limparVincular()">✕</button>
     </div>
-    <!-- Botão NFC -->
-    <button class="btn btn-nfc" id="btnNFC" onclick="lerNFC()">
+    <div class="epc-status" id="epcStatus"></div>
+    <button class="btn btn-nfc" id="btnNFC" onclick="lerNFC()" style="margin-top:12px">
       <i class="ti ti-nfc"></i> Ler tag NFC
     </button>
-    <!-- Dica iPhone -->
     <div id="nfcDica" style="display:none" class="nfc-dica">
       <div class="nfc-dica-titulo"><i class="ti ti-brand-apple"></i> No iPhone</div>
       <div class="nfc-dica-texto">
-        O Safari não suporta Web NFC. Use assim:<br>
-        1. Baixe o app <strong>NFC Tools</strong> (gratuito)<br>
-        2. Leia a tag e copie o ID<br>
-        3. Cole no campo acima<br><br>
-        <strong>Ou:</strong> use o app <strong>Atalhos</strong> do iOS com automação NFC para abrir este app com o código preenchido.
+        O Safari não suporta Web NFC. Use o app <strong>NFC Tools</strong>, leia a tag, copie o UID e cole no campo acima.
       </div>
     </div>
   </div>
 
-  <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-package"></i> Dados do bag</div>
-    <div class="campo">
-      <label>Número do bag / lote *</label>
-      <input id="numeroBag" type="text" placeholder="Ex: 26S0001"/>
+  <!-- Lista de bags pendentes — aparece após ler a tag -->
+  <div id="secBagsPendentes" style="display:none" class="secao">
+    <div class="secao-titulo" style="color:var(--verde)">
+      <i class="ti ti-list-check"></i> Selecione o bag
     </div>
-    <div class="campo">
-      <label>Cultivar *</label>
-      <input id="cultivarSelect" type="text" placeholder="Ex: Zeus, 55I57RSF IPRO..." list="listaCultivares"/>
-    </div>
-    <div class="campo-linha">
-      <div>
-        <label>Categoria</label>
-        <select id="categoriaSelect">
-          <option value="C1">C1</option>
-          <option value="C2">C2</option>
-          <option value="S1">S1</option>
-          <option value="S2">S2</option>
-        </select>
-      </div>
-      <div>
-        <label>Peneira</label>
-        <input id="peneira" type="text" placeholder="Ex: Redonda 5,5"/>
-      </div>
-    </div>
-    <div class="campo-linha">
-      <div>
-        <label>Peso (kg)</label>
-        <input id="peso" type="number" placeholder="40" step="0.1"/>
-      </div>
-      <div>
-        <label>Tratamento</label>
-        <input id="tratamento" type="text" placeholder="Ex: Standak Top"/>
-      </div>
-    </div>
-    <div class="campo">
-      <label>Produtor</label>
-      <input id="produtor" type="text" placeholder="Nome do produtor"/>
-    </div>
-    <div class="campo">
-      <label>Localização inicial</label>
-      <input id="localizacao" type="text" placeholder="Ex: SCV — Rua A1, Pos 01"/>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:12px;line-height:1.5">
+      Qual bag você está colando esta tag agora?
+    </p>
+    <div id="listaBagsPendentes"></div>
+  </div>
+
+  <!-- Mensagem quando não há bags pendentes -->
+  <div id="secSemPendentes" style="display:none" class="secao">
+    <div class="estado-vazio">
+      <i class="ti ti-clipboard-x" style="font-size:40px;margin-bottom:12px;color:var(--texto3)"></i>
+      <p>Nenhum bag aguardando tag</p>
+      <p style="font-size:13px;color:var(--texto3);margin-top:6px">Crie um lote primeiro na aba Lotes</p>
+      <button class="btn btn-azul" style="margin-top:16px" onclick="goTab('lotes')">
+        <i class="ti ti-clipboard-plus"></i> Ir para Lotes
+      </button>
     </div>
   </div>
 
-  <button class="btn btn-azul" onclick="vincularBag()">
-    <i class="ti ti-link"></i> Vincular tag ao bag
-  </button>
-  <button class="btn btn-cinza" onclick="goTab('buscar')">
-    <i class="ti ti-search"></i> Buscar bag existente
-  </button>
-
-  <div style="display:flex;align-items:center;gap:10px;margin:6px 0">
+  <!-- Separador reutilizar tag -->
+  <div style="display:flex;align-items:center;gap:10px;margin:16px 0 6px">
     <div style="flex:1;height:1px;background:var(--borda)"></div>
-    <span style="font-size:12px;color:var(--texto3)">REUTILIZAR TAG</span>
+    <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">REUTILIZAR TAG</span>
     <div style="flex:1;height:1px;background:var(--borda)"></div>
   </div>
 
   <div class="secao">
     <div class="secao-titulo"><i class="ti ti-unlink"></i> Desvincular tag</div>
     <p style="font-size:14px;color:var(--texto2);margin-bottom:12px;line-height:1.6">
-      Leia a tag que será reutilizada. O sistema registra a devolução e libera o EPC para um novo bag — sem perder o histórico.
+      Leia a tag que será reutilizada. O sistema registra a devolução e libera o UID para um novo bag — sem perder o histórico.
     </p>
-    <div class="campo">
-      <label>EPC da tag a desvincular</label>
-      <div class="epc-wrap">
-        <input class="epc-input" id="epcDesvincular" type="text"
-          placeholder="Aproxime a tag ou digite o EPC..."
-          autocomplete="off" autocorrect="off" spellcheck="false"
-          oninput="onEpcDesvincular(this.value)"/>
-        <button class="epc-limpar" onclick="clearField('epcDesvincular')">✕</button>
-      </div>
-      <div class="epc-status" id="epcDesvinculaStatus"></div>
+    <div class="epc-wrap">
+      <input class="epc-input" id="epcDesvincular" type="text"
+        placeholder="Aproxime a tag ou cole o UID..."
+        autocomplete="off" autocorrect="off" spellcheck="false"
+        oninput="onEpcDesvincular(this.value)"/>
+      <button class="epc-limpar" onclick="clearField('epcDesvincular')">✕</button>
     </div>
-    <!-- Preview do bag que será desvinculado -->
+    <div class="epc-status" id="epcDesvinculaStatus"></div>
     <div id="desvinculaPreview" style="display:none" class="desvincular-preview">
       <div class="desvincular-preview-titulo">Tag vinculada a:</div>
       <div id="desvinculaInfo"></div>
