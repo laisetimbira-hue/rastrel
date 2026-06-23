@@ -469,7 +469,17 @@ function onEpcInput(val) {
 };
 
 async function carregarBagsPendentes(epc) {
-  if(!db) return;
+  // Aguarda db estar disponível
+  let tentativas = 0;
+  while (!db && tentativas < 16) {
+    await new Promise(r => setTimeout(r, 500));
+    tentativas++;
+  }
+  if(!db) {
+    g('listaBagsPendentes').innerHTML = '<p class="vazio">Firebase não conectado</p>';
+    return;
+  }
+
   // Esconder painel de confirmação se estiver visível
   const painel = g('painelConfirmacaoNFC');
   if(painel) painel.style.display = 'none';
