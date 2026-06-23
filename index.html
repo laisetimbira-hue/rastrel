@@ -1948,44 +1948,126 @@ async function abrirBagPorDeepLink(numeroBag) {
     .where('numero_bag', '==', numeroBag).get();
 
   if (snap.empty) {
-    flash('Bag ' + numeroBag + ' não encontrado — verifique o número', 'err');
+    flash('Bag ' + numeroBag + ' não encontrado', 'err');
     goTab('vincular');
     return;
   }
 
   const bag = { id: snap.docs[0].id, ...snap.docs[0].data() };
 
-  // Ir para a tela de Vincular
+  // Limpar URL para não reprocessar ao recarregar
+  const urlAtual = new URL(window.location.href);
+  urlAtual.searchParams.delete('bag');
+  window.history.replaceState({}, '', urlAtual.toString());
+
+  // Ir para Vincular e mostrar o painel de confirmação
   goTab('vincular');
 
   if (bag.status === 'aguardando_tag') {
-    flash('📦 ' + numeroBag + ' — selecione abaixo para vincular a tag', 'ok');
-    // Carregar lista de pendentes (sem EPC real, só para exibir)
-    await carregarBagsPendentes('__deep_link__');
-    // Destacar o bag específico na lista com borda azul
-    setTimeout(() => {
-      const el = document.querySelector(`[onclick*="${bag.id}"]`);
-      if (el) {
-        el.style.border = '2px solid var(--azul)';
-        el.style.borderRadius = '8px';
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 400);
-
+    mostrarPainelConfirmacaoNFC(bag);
   } else if (bag.status === 'em_estoque') {
-    flash('📦 ' + numeroBag + ' já vinculado · ' + (bag.cultivar_nome||'—') + ' · ' + (bag.localizacao_atual||'—'), 'ok');
-
+    flash('📦 ' + numeroBag + ' já está vinculado · ' + (bag.cultivar_nome||'—') + ' · ' + (bag.localizacao_atual||'—'), 'ok');
   } else if (bag.status === 'expedido') {
     flash('📦 ' + numeroBag + ' foi expedido', 'warn');
-
   } else {
     flash('📦 ' + numeroBag + ' · status: ' + bag.status, 'warn');
   }
+}
 
-  // Limpar o parâmetro da URL para não reprocessar ao recarregar
-  const url = new URL(window.location.href);
-  url.searchParams.delete('bag');
-  window.history.replaceState({}, '', url.toString());
+function mostrarPainelConfirmacaoNFC(bag) {
+  // Esconde a leitura de tag padrão e mostra painel de confirmação dedicado
+  g('secBagsPendentes').style.display = 'none';
+  g('secSemPendentes').style.display  = 'none';
+
+  // Criar ou atualizar painel de confirmação
+  let painel = g('painelConfirmacaoNFC');
+  if (!painel) {
+    painel = document.createElement('div');
+    painel.id = 'painelConfirmacaoNFC';
+    painel.className = 'secao';
+    // Inserir antes da seção de desvincular
+    const secVincular = g('screen-vincular');
+    const secDesvincular = secVincular.querySelector('.secao:last-of-type');
+    secVincular.insertBefore(painel, secDesvincular);
+  }
+
+  const cor = '#4f8ef7';
+  painel.style.display = 'block';
+  painel.style.borderColor = 'rgba(79,142,247,.3)';
+  painel.innerHTML = `
+    <div class="secao-titulo" style="color:var(--azul)">
+      <i class="ti ti-nfc"></i> Tag lida — confirme o bag
+    </div>
+    <div style="background:var(--bg3);border-radius:var(--r-sm);padding:14px;margin-bottom:16px">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:var(--texto);margin-bottom:4px">
+        ${bag.numero_bag}
+      </div>
+      <div style="font-size:14px;color:var(--texto2);margin-bottom:2px">${bag.cultivar_nome||'—'}</div>
+      <div style="font-size:13px;color:var(--texto3)">${bag.categoria||'—'} · ${bag.produtor||'—'} · ${bag.localizacao_atual||'Sem posição'}</div>
+    </div>
+    <p style="font-size:14px;color:var(--texto2);margin-bottom:16px;line-height:1.6">
+      A tag NFC foi colada neste bag?
+    </p>
+    <button class="btn btn-verde" onclick="confirmarVinculacaoNFC('${bag.id}','${bag.numero_bag}','${bag.lote||''}')">
+      <i class="ti ti-check"></i> Sim — vincular esta tag ao bag
+    </button>
+    <button class="btn btn-cinza" style="margin-top:8px" onclick="cancelarConfirmacaoNFC()">
+      <i class="ti ti-x"></i> Cancelar
+    </button>
+  `;
+
+  painel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
+  if (!db) { flash('Firebase não conectado','err'); return; }
+
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+
+  // Usar URL como identificador único da tag (já que iOS não expõe o UID)
+  const epcGerado = 'URL-' + numeroBag;
+
+  // Verificar se bag ainda está aguardando (outro dispositivo pode ter vinculado)
+  const snap = await db.collection('bags').doc(bagId).get();
+  if (!snap.exists || snap.data().status !== 'aguardando_tag') {
+    flash('Este bag já foi vinculado por outro dispositivo', 'warn');
+    cancelarConfirmacaoNFC();
+    return;
+  }
+
+  await db.collection('bags').doc(bagId).update({
+    epc: epcGerado,
+    status: 'em_estoque',
+    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  await db.collection('movimentacoes').add({
+    bag_id: bagId, numero_bag: numeroBag,
+    tipo_evento: 'vinculacao',
+    local_destino: snap.data().localizacao_atual || '',
+    observacao: `Tag NFC vinculada via URL — ${epcGerado}`,
+    operador: op, dispositivo: dev,
+    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+
+  flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
+  cancelarConfirmacaoNFC();
+
+  // Verificar se lote está completo
+  if (lote) {
+    const snapPend = await db.collection('bags')
+      .where('lote','==', lote)
+      .where('status','==','aguardando_tag').get();
+    if (snapPend.empty) {
+      flash('✅ Lote ' + lote + ' completo — todos os bags vinculados!', 'ok');
+    }
+  }
+}
+
+function cancelarConfirmacaoNFC() {
+  const painel = g('painelConfirmacaoNFC');
+  if (painel) painel.style.display = 'none';
 }
 
 // ── LEITURA NFC ──
