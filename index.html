@@ -1363,10 +1363,10 @@ function renderGrade(elId, posicoes, porPosicao, capacidade=CAPACIDADE_POSICAO, 
       </td>`;
     };
 
-    // Numeração em ziguezague: linha 0 = posições 1ª e (linhas+1)ª,
-    // linha 1 = 2ª e (linhas+2)ª, ... última linha = Nª e capacidadeª.
+    // Renderiza de trás para frente: slot 0 (primeiro a chegar = fundo)
+    // aparece na base da tabela, slot (linhas-1) aparece no topo (frente).
     let linhasHtml = '';
-    for(let l=0; l<linhas; l++){
+    for(let l=linhas-1; l>=0; l--){
       const idxEsquerda = l;
       const idxDireita  = l + linhas;
       linhasHtml += `<tr>${renderSlot(slots[idxEsquerda], idxEsquerda)}${renderSlot(slots[idxDireita], idxDireita)}</tr>`;
