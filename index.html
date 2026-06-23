@@ -1975,29 +1975,12 @@ async function abrirBagPorDeepLink(numeroBag) {
 }
 
 function mostrarPainelConfirmacaoNFC(bag) {
-  // Esconde a leitura de tag padrão e mostra painel de confirmação dedicado
+  // Esconde listas de leitura padrão
   g('secBagsPendentes').style.display = 'none';
   g('secSemPendentes').style.display  = 'none';
 
-  // Criar ou atualizar painel de confirmação
-  let painel = g('painelConfirmacaoNFC');
-  if (!painel) {
-    painel = document.createElement('div');
-    painel.id = 'painelConfirmacaoNFC';
-    painel.className = 'secao';
-    // Inserir antes da seção de desvincular
-    const secVincular = g('screen-vincular');
-    const secDesvincular = secVincular.querySelector('.secao:last-of-type');
-    secVincular.insertBefore(painel, secDesvincular);
-  }
-
-  const cor = '#4f8ef7';
-  painel.style.display = 'block';
-  painel.style.borderColor = 'rgba(79,142,247,.3)';
-  painel.innerHTML = `
-    <div class="secao-titulo" style="color:var(--azul)">
-      <i class="ti ti-nfc"></i> Tag lida — confirme o bag
-    </div>
+  // Atualizar conteúdo do painel fixo e exibir
+  g('painelConfirmacaoConteudo').innerHTML = `
     <div style="background:var(--bg3);border-radius:var(--r-sm);padding:14px;margin-bottom:16px">
       <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:var(--texto);margin-bottom:4px">
         ${bag.numero_bag}
@@ -2010,12 +1993,10 @@ function mostrarPainelConfirmacaoNFC(bag) {
     </p>
     <button class="btn btn-verde" onclick="confirmarVinculacaoNFC('${bag.id}','${bag.numero_bag}','${bag.lote||''}')">
       <i class="ti ti-check"></i> Sim — vincular esta tag ao bag
-    </button>
-    <button class="btn btn-cinza" style="margin-top:8px" onclick="cancelarConfirmacaoNFC()">
-      <i class="ti ti-x"></i> Cancelar
-    </button>
-  `;
+    </button>`;
 
+  const painel = g('painelConfirmacaoNFC');
+  painel.style.display = 'block';
   painel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -3425,6 +3406,17 @@ select option{background:var(--bg2)}
       <div class="banner-titulo">Firebase não configurado</div>
       <div class="banner-texto">Vá na aba <span class="banner-link" onclick="goTab('config')">Config</span>, cole os dados do Firebase e toque em Salvar.</div>
     </div>
+  </div>
+
+  <!-- Painel de confirmação NFC (deep link via tag) — oculto por padrão -->
+  <div id="painelConfirmacaoNFC" class="secao" style="display:none;border-color:rgba(79,142,247,.3)">
+    <div class="secao-titulo" style="color:var(--azul)">
+      <i class="ti ti-nfc"></i> Tag lida — confirme o bag
+    </div>
+    <div id="painelConfirmacaoConteudo"></div>
+    <button class="btn btn-cinza" style="margin-top:8px" onclick="cancelarConfirmacaoNFC()">
+      <i class="ti ti-x"></i> Cancelar
+    </button>
   </div>
 
   <!-- Leitura da tag -->
