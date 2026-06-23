@@ -162,6 +162,13 @@ window.addEventListener('DOMContentLoaded', () => {
     aplicarFonte();
   }
   tentarConectar();
+  // Deep link via NFC: se a URL contém ?bag=NUMERO, abre o bag direto
+  // na tela de Vincular após o Firebase conectar.
+  // Exemplo de URL gravada na tag: https://.../?bag=26S01C-05
+  const _bagParam = new URLSearchParams(window.location.search).get('bag');
+  if (_bagParam) {
+    abrirBagPorDeepLink(_bagParam.toUpperCase().trim());
+  }
 });
 
 // ── CONFIG FIREBASE EMBUTIDA ──
@@ -1859,6 +1866,66 @@ O histórico será mantido e a tag ficará disponível para reutilização.`)) r
   g('desvinculaPreview').style.display = 'none';
   g('btnDesvincular').style.display    = 'none';
   bagParaDesvincular = null;
+}
+
+// ── DEEP LINK VIA NFC ──
+// Ativado quando a URL contém ?bag=NUMERO (gravado na tag NFC).
+// Aguarda o Firebase estar pronto e abre o bag na tela de Vincular.
+async function abrirBagPorDeepLink(numeroBag) {
+  // Aguarda db estar disponível (até 16 tentativas × 500ms = 8 segundos)
+  let tentativas = 0;
+  while (!db && tentativas < 16) {
+    await new Promise(r => setTimeout(r, 500));
+    tentativas++;
+  }
+  if (!db) {
+    flash('Não foi possível abrir o bag — Firebase não conectado', 'err');
+    return;
+  }
+
+  // Buscar o bag pelo número
+  const snap = await db.collection('bags')
+    .where('numero_bag', '==', numeroBag).get();
+
+  if (snap.empty) {
+    flash('Bag ' + numeroBag + ' não encontrado — verifique o número', 'err');
+    goTab('vincular');
+    return;
+  }
+
+  const bag = { id: snap.docs[0].id, ...snap.docs[0].data() };
+
+  // Ir para a tela de Vincular
+  goTab('vincular');
+
+  if (bag.status === 'aguardando_tag') {
+    flash('📦 ' + numeroBag + ' — selecione abaixo para vincular a tag', 'ok');
+    // Carregar lista de pendentes (sem EPC real, só para exibir)
+    await carregarBagsPendentes('__deep_link__');
+    // Destacar o bag específico na lista com borda azul
+    setTimeout(() => {
+      const el = document.querySelector(`[onclick*="${bag.id}"]`);
+      if (el) {
+        el.style.border = '2px solid var(--azul)';
+        el.style.borderRadius = '8px';
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 400);
+
+  } else if (bag.status === 'em_estoque') {
+    flash('📦 ' + numeroBag + ' já vinculado · ' + (bag.cultivar_nome||'—') + ' · ' + (bag.localizacao_atual||'—'), 'ok');
+
+  } else if (bag.status === 'expedido') {
+    flash('📦 ' + numeroBag + ' foi expedido', 'warn');
+
+  } else {
+    flash('📦 ' + numeroBag + ' · status: ' + bag.status, 'warn');
+  }
+
+  // Limpar o parâmetro da URL para não reprocessar ao recarregar
+  const url = new URL(window.location.href);
+  url.searchParams.delete('bag');
+  window.history.replaceState({}, '', url.toString());
 }
 
 // ── LEITURA NFC ──
