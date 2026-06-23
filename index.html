@@ -1973,7 +1973,7 @@ async function abrirBagPorDeepLink(numeroBag) {
     tentativas++;
   }
   if (!db) {
-    flash('Não foi possível abrir o bag — Firebase não conectado', 'err');
+    flash('Não foi possível abrir — Firebase não conectado', 'err');
     return;
   }
 
@@ -1982,9 +1982,22 @@ async function abrirBagPorDeepLink(numeroBag) {
   urlAtual.searchParams.delete('bag');
   window.history.replaceState({}, '', urlAtual.toString());
 
-  // ── Se há expedição ativa, registrar o bag direto na carga ──
-  if (pedidoAtivo) {
+  // ── Verificar se há expedição ativa no Firebase ──
+  const snapOC = await db.collection('pedidos_carga')
+    .where('status', '==', 'conferindo')
+    .limit(1).get();
+
+  if (!snapOC.empty) {
+    const ocDoc  = snapOC.docs[0];
+    const ocData = ocDoc.data();
+    pedidoAtivo  = { id: ocDoc.id, numero: ocData.numero_pedido };
+    localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
+
     goTab('expedicao');
+    g('pedidoForm').style.display        = 'none';
+    g('conferenciaPainel').style.display = 'block';
+    g('pedidoInfo').textContent          = ocData.numero_pedido + (ocData.placa_veiculo ? ' · ' + ocData.placa_veiculo : '');
+
     await registrarBagNaCarga_peloNumero(numeroBag);
     return;
   }
