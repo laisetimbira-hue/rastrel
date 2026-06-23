@@ -144,6 +144,12 @@ const EV_COR = {
 
 let pedidoAtivo=null, cargaLidos=[], cargaDivs=[], epcTimer=null;
 
+// Restaurar expedição ativa do localStorage (persiste entre recarregamentos do Safari)
+const _expedicaoSalva = localStorage.getItem('expedicao_ativa');
+if (_expedicaoSalva) {
+  try { pedidoAtivo = JSON.parse(_expedicaoSalva); } catch(e) {}
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   preencherCultivares();
   carregarCfgForm();
@@ -162,6 +168,15 @@ window.addEventListener('DOMContentLoaded', () => {
     aplicarFonte();
   }
   tentarConectar();
+
+  // Restaurar painel de expedição se havia OC ativa antes do app recarregar
+  if (pedidoAtivo) {
+    g('pedidoForm').style.display = 'none';
+    g('conferenciaPainel').style.display = 'block';
+    g('pedidoInfo').textContent = pedidoAtivo.numero;
+    atualizarKpis();
+  }
+
   // Deep link via NFC: se a URL contém ?bag=NUMERO, abre o bag direto
   // na tela de Vincular após o Firebase conectar.
   // Exemplo de URL gravada na tag: https://.../?bag=26S01C-05
@@ -573,6 +588,7 @@ async function criarPedido() {
     criado_em:serverTimestamp(),
   });
   pedidoAtivo={id:ref.id,numero:num};
+  localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
   cargaLidos=[]; cargaDivs=[];
   atualizarKpis(); renderLidos();
   g('pedidoInfo').textContent=num+(g('placa').value?' · '+g('placa').value:'');
@@ -617,6 +633,53 @@ async function registrarBagNaCarga(epc) {
   atualizarKpis(); renderLidos();
   flash(bag.numero_bag+' — '+(bag.cultivar_nome||''),'ok');
 }
+async function registrarBagNaCarga_peloNumero(numeroBag) {
+  if(!pedidoAtivo){ flash('Nenhuma expedição ativa','err'); return; }
+
+  // Verificar se bag já foi lido nesta carga
+  if(cargaLidos.find(b=>b.numero===numeroBag)){
+    flash(numeroBag + ' já foi registrado nesta carga','warn');
+    return;
+  }
+
+  const op  = localStorage.getItem('operador')  || 'Operador';
+  const dev = localStorage.getItem('dispositivo')|| 'App';
+
+  // Buscar bag pelo número
+  const snap = await db.collection('bags')
+    .where('numero_bag','==',numeroBag).get();
+
+  if(snap.empty){
+    flash(numeroBag + ' não encontrado no sistema','err');
+    if(!cargaDivs.find(d=>d.epc===numeroBag))
+      cargaDivs.push({epc:numeroBag, motivo:'Bag não encontrado'});
+    atualizarKpis(); renderDivs();
+    return;
+  }
+
+  const bagDoc = snap.docs[0];
+  const bag    = bagDoc.data();
+  const epc    = bag.epc || ('URL-' + numeroBag);
+
+  await addDoc(collection(db,'movimentacoes'),{
+    bag_id:bagDoc.id, numero_bag:bag.numero_bag,
+    tipo_evento:'conferencia_carga',
+    observacao:`Carga via NFC — pedido ${pedidoAtivo.numero}`,
+    operador:op, dispositivo:dev,
+    criado_em:serverTimestamp(),
+  });
+  await db.collection('pedidos_carga').doc(pedidoAtivo.id)
+    .collection('itens').add({
+      bag_id:bagDoc.id, numero_bag:bag.numero_bag,
+      epc, status_validacao:'lido',
+      criado_em:serverTimestamp(),
+    });
+
+  cargaLidos.push({epc, numero:bag.numero_bag, cultivar:bag.cultivar_nome||'—'});
+  atualizarKpis(); renderLidos();
+  flash('✓ ' + bag.numero_bag + ' — ' + (bag.cultivar_nome||'') + ' adicionado à carga','ok');
+}
+
 function atualizarKpis(){
   g('kLidos').textContent=cargaLidos.length;
   g('kOk').textContent=cargaLidos.length-cargaDivs.length;
@@ -751,6 +814,7 @@ async function devolverTagRapido(bagId, epc, numeroBag) {
 }
 function cancelarPedido() {
   pedidoAtivo=null; cargaLidos=[]; cargaDivs=[];
+  localStorage.removeItem('expedicao_ativa');
   g('conferenciaPainel').style.display='none';
   g('pedidoForm').style.display='block';
   ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
@@ -1902,7 +1966,7 @@ O histórico será mantido e a tag ficará disponível para reutilização.`)) r
 // Ativado quando a URL contém ?bag=NUMERO (gravado na tag NFC).
 // Aguarda o Firebase estar pronto e abre o bag na tela de Vincular.
 async function abrirBagPorDeepLink(numeroBag) {
-  // Aguarda db estar disponível (até 16 tentativas × 500ms = 8 segundos)
+  // Aguarda db estar disponível (até 8 segundos)
   let tentativas = 0;
   while (!db && tentativas < 16) {
     await new Promise(r => setTimeout(r, 500));
@@ -1913,7 +1977,19 @@ async function abrirBagPorDeepLink(numeroBag) {
     return;
   }
 
-  // Buscar o bag pelo número
+  // Limpar URL para não reprocessar ao recarregar
+  const urlAtual = new URL(window.location.href);
+  urlAtual.searchParams.delete('bag');
+  window.history.replaceState({}, '', urlAtual.toString());
+
+  // ── Se há expedição ativa, registrar o bag direto na carga ──
+  if (pedidoAtivo) {
+    goTab('expedicao');
+    await registrarBagNaCarga_peloNumero(numeroBag);
+    return;
+  }
+
+  // ── Sem expedição ativa — fluxo normal de vincular ──
   const snap = await db.collection('bags')
     .where('numero_bag', '==', numeroBag).get();
 
@@ -1924,21 +2000,14 @@ async function abrirBagPorDeepLink(numeroBag) {
   }
 
   const bag = { id: snap.docs[0].id, ...snap.docs[0].data() };
-
-  // Limpar URL para não reprocessar ao recarregar
-  const urlAtual = new URL(window.location.href);
-  urlAtual.searchParams.delete('bag');
-  window.history.replaceState({}, '', urlAtual.toString());
-
-  // Ir para Vincular e mostrar o painel de confirmação
   goTab('vincular');
 
   if (bag.status === 'aguardando_tag') {
     mostrarPainelConfirmacaoNFC(bag);
   } else if (bag.status === 'em_estoque') {
-    flash('📦 ' + numeroBag + ' já está vinculado · ' + (bag.cultivar_nome||'—') + ' · ' + (bag.localizacao_atual||'—'), 'ok');
+    flash('📦 ' + numeroBag + ' · ' + (bag.cultivar_nome||'—') + ' · ' + (bag.localizacao_atual||'—'), 'ok');
   } else if (bag.status === 'expedido') {
-    flash('📦 ' + numeroBag + ' foi expedido', 'warn');
+    flash('📦 ' + numeroBag + ' já foi expedido', 'warn');
   } else {
     flash('📦 ' + numeroBag + ' · status: ' + bag.status, 'warn');
   }
