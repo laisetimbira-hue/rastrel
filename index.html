@@ -1058,7 +1058,7 @@ async function abrirLote(numero) {
       <div class="linha-item">
         <div>
           <span class="item-num">${b.numero_bag}</span>
-          <span class="item-sub">Grave este número na tag NFC</span>
+          <span class="item-sub">Copie a URL abaixo e grave na tag NFC</span>
         </div>
         <span class="tag tag-amarelo">Sem tag</span>
       </div>`).join('');
@@ -1084,8 +1084,68 @@ async function abrirLote(numero) {
     g('secVinculados').style.display='none';
   }
 
+  // URLs para gravar nas tags — mostra só os bags ainda sem tag
+  const BASE_URL = window.location.origin + window.location.pathname;
+  if(pendente.length){
+    g('secURLs').style.display = 'block';
+    g('listaURLs').innerHTML = pendente.map(b=>{
+      const url = `${BASE_URL}?bag=${b.numero_bag}`;
+      return `<div class="url-item">
+        <div class="url-texto mono">${url}</div>
+        <button class="btn-copiar" onclick="copiarURL('${url}','btn-${b.id}')" id="btn-${b.id}">
+          <i class="ti ti-copy"></i>
+        </button>
+      </div>`;
+    }).join('');
+  } else {
+    g('secURLs').style.display = 'none';
+  }
+
   // Buscar expedições dos bags deste lote
   await carregarExpedicoesDo(numero, bags);
+}
+
+let _urlsParaCopiar = [];
+
+function copiarURL(url, btnId) {
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = document.getElementById(btnId);
+    if(btn){
+      btn.innerHTML = '<i class="ti ti-check"></i>';
+      btn.style.color = 'var(--verde)';
+      setTimeout(() => {
+        btn.innerHTML = '<i class="ti ti-copy"></i>';
+        btn.style.color = '';
+      }, 2000);
+    }
+  }).catch(() => {
+    // Fallback para iOS que pode bloquear clipboard fora de interação
+    const el = document.createElement('textarea');
+    el.value = url;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    flash('URL copiada!', 'ok');
+  });
+}
+
+function copiarTodasURLs() {
+  const urls = [...document.querySelectorAll('.url-texto')]
+    .map(el => el.textContent.trim())
+    .join('\n');
+  if(!urls){ flash('Nenhuma URL para copiar','warn'); return; }
+  navigator.clipboard.writeText(urls).then(() => {
+    flash(`${urls.split('\n').length} URLs copiadas!`, 'ok');
+  }).catch(() => {
+    const el = document.createElement('textarea');
+    el.value = urls;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    flash('URLs copiadas!', 'ok');
+  });
 }
 
 async function carregarExpedicoesDo(lote, bags) {
@@ -2915,6 +2975,30 @@ select option{background:var(--bg2)}
 }
 .modal-bags-lista{border-top:1px solid var(--borda);padding-top:4px}
 
+/* ── URLS NFC ── */
+.url-item{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 0;
+  border-bottom:1px solid var(--borda);
+}
+.url-item:last-child{border-bottom:none}
+.url-texto{
+  flex:1;
+  font-size:11px;color:var(--azul);
+  word-break:break-all;line-height:1.4;
+}
+.btn-copiar{
+  background:var(--bg3);border:1px solid var(--borda);
+  border-radius:8px;
+  width:36px;height:36px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;color:var(--texto2);
+  cursor:pointer;flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+  transition:color .15s,background .15s;
+}
+.btn-copiar:active{background:var(--bg4)}
+
 /* ── FLASH ── */
 .flash{
   position:fixed;
@@ -3213,6 +3297,18 @@ select option{background:var(--bg2)}
       Grave o número de cada bag na tag NFC (app <strong>NFC Tools</strong>) e depois vincule na aba <strong>Vincular</strong>.
     </p>
     <div id="listaPendentes"></div>
+  </div>
+
+  <!-- URLs para gravar nas tags NFC -->
+  <div id="secURLs" class="secao" style="display:none">
+    <div class="secao-titulo"><i class="ti ti-nfc"></i> URLs para gravar nas tags</div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
+      Abra o <strong>NFC Tools</strong> → <strong>Write → Add a record → URL</strong> → cole a URL abaixo → grave na tag do bag correspondente.
+    </p>
+    <button class="btn btn-cinza" onclick="copiarTodasURLs()" style="margin-bottom:14px">
+      <i class="ti ti-copy"></i> Copiar todas as URLs
+    </button>
+    <div id="listaURLs"></div>
   </div>
 
   <!-- Bags vinculados -->
