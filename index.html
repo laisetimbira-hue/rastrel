@@ -423,6 +423,7 @@ function goTab(name) {
   if(name==='dashboard') carregarDashboard();
   if(name==='lotes') carregarLotes();
   if(name==='mapa') carregarMapa();
+  if(name==='vincular') carregarBagsPendentes('__manual__');
   fecharDrawer();
   window.scrollTo(0,0);
 }
@@ -469,6 +470,10 @@ function onEpcInput(val) {
 
 async function carregarBagsPendentes(epc) {
   if(!db) return;
+  // Esconder painel de confirmação se estiver visível
+  const painel = g('painelConfirmacaoNFC');
+  if(painel) painel.style.display = 'none';
+
   const snap = await db.collection('bags')
     .where('status','==','aguardando_tag')
     .orderBy('numero_bag').get();
@@ -523,57 +528,12 @@ function clearField(id) {
 };
 
 async function vincularBagAo(bagId, numeroBag) {
+  // Buscar dados completos do bag para mostrar no painel de confirmação
   if(!db) return;
-  const epc = g('epcInput').value.trim();
-  if(!epc){ flash('Leia a tag primeiro','err'); return; }
-
-  const op  = localStorage.getItem('operador')    || 'Operador';
-  const dev = localStorage.getItem('dispositivo') || 'App';
-
-  if(!navigator.onLine) adicionarNaFila('Vinculação — ' + numeroBag);
-
-  // Confirmar de novo que o EPC ainda está livre (race condition entre dois celulares)
-  const snapEpc = await db.collection('bags').where('epc','==',epc).get();
-  if(!snapEpc.empty){
-    flash('Tag já foi vinculada por outro dispositivo — leia uma nova tag','err');
-    limparVincular();
-    return;
-  }
-
   const snap = await db.collection('bags').doc(bagId).get();
   if(!snap.exists){ flash('Bag não encontrado','err'); return; }
-  const bag = snap.data();
-
-  if(bag.status !== 'aguardando_tag'){
-    flash('Bag ' + numeroBag + ' já foi vinculado — selecione outro','warn');
-    await carregarBagsPendentes(epc);
-    return;
-  }
-
-  await db.collection('bags').doc(bagId).update({
-    epc,
-    status: 'em_estoque',
-    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-  await db.collection('movimentacoes').add({
-    bag_id: bagId, numero_bag: numeroBag,
-    tipo_evento: 'vinculacao',
-    local_destino: bag.localizacao_atual || '',
-    observacao: `Tag vinculada — UID ${epc}`,
-    operador: op, dispositivo: dev,
-    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-
-  flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
-  limparVincular();
-
-  // Verificar se ainda há bags pendentes no mesmo lote
-  const snapPend = await db.collection('bags')
-    .where('lote','==', bag.lote||'')
-    .where('status','==','aguardando_tag').get();
-  if(snapPend.empty && bag.lote){
-    flash('✅ Lote ' + bag.lote + ' completo — todos os bags vinculados!', 'ok');
-  }
+  const bag = { id: bagId, ...snap.data() };
+  mostrarPainelConfirmacaoNFC(bag);
 }
 
 async function vincularBag() {
@@ -2049,6 +2009,8 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
 function cancelarConfirmacaoNFC() {
   const painel = g('painelConfirmacaoNFC');
   if (painel) painel.style.display = 'none';
+  // Recarregar lista de bags pendentes
+  carregarBagsPendentes('__manual__');
 }
 
 // ── LEITURA NFC ──
@@ -3398,7 +3360,7 @@ select option{background:var(--bg2)}
 
 <main class="screen active" id="screen-vincular">
   <div class="pg-titulo">Vincular tag</div>
-  <div class="pg-sub">Aproxime a tag NFC do bag para vincular</div>
+  <div class="pg-sub">Selecione o bag e confirme a tag colada</div>
 
   <div id="banner" class="banner">
     <i class="ti ti-alert-triangle"></i>
@@ -3419,37 +3381,12 @@ select option{background:var(--bg2)}
     </button>
   </div>
 
-  <!-- Leitura da tag -->
-  <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-antenna"></i> Tag NFC</div>
-    <div class="epc-wrap">
-      <input class="epc-input" id="epcInput" type="text"
-        placeholder="Aproxime a tag ou cole o UID aqui..."
-        autocomplete="off" autocorrect="off" spellcheck="false"
-        oninput="onEpcInput(this.value)"/>
-      <button class="epc-limpar" onclick="limparVincular()">✕</button>
+  <!-- Bags pendentes — carregados automaticamente ao abrir a tela -->
+  <div id="secBagsPendentes" class="secao">
+    <div class="secao-titulo"><i class="ti ti-list-check"></i> Bags aguardando tag</div>
+    <div id="listaBagsPendentes">
+      <p class="vazio">Carregando...</p>
     </div>
-    <div class="epc-status" id="epcStatus"></div>
-    <button class="btn btn-nfc" id="btnNFC" onclick="lerNFC()" style="margin-top:12px">
-      <i class="ti ti-nfc"></i> Ler tag NFC
-    </button>
-    <div id="nfcDica" style="display:none" class="nfc-dica">
-      <div class="nfc-dica-titulo"><i class="ti ti-brand-apple"></i> No iPhone</div>
-      <div class="nfc-dica-texto">
-        O Safari não suporta Web NFC. Use o app <strong>NFC Tools</strong>, leia a tag, copie o UID e cole no campo acima.
-      </div>
-    </div>
-  </div>
-
-  <!-- Lista de bags pendentes — aparece após ler a tag -->
-  <div id="secBagsPendentes" style="display:none" class="secao">
-    <div class="secao-titulo" style="color:var(--verde)">
-      <i class="ti ti-list-check"></i> Selecione o bag
-    </div>
-    <p style="font-size:13px;color:var(--texto2);margin-bottom:12px;line-height:1.5">
-      Qual bag você está colando esta tag agora?
-    </p>
-    <div id="listaBagsPendentes"></div>
   </div>
 
   <!-- Mensagem quando não há bags pendentes -->
@@ -3464,8 +3401,12 @@ select option{background:var(--bg2)}
     </div>
   </div>
 
+  <button class="btn btn-cinza" onclick="carregarBagsPendentes('__manual__')">
+    <i class="ti ti-refresh"></i> Atualizar lista
+  </button>
+
   <!-- Separador reutilizar tag -->
-  <div style="display:flex;align-items:center;gap:10px;margin:16px 0 6px">
+  <div style="display:flex;align-items:center;gap:10px;margin:20px 0 6px">
     <div style="flex:1;height:1px;background:var(--borda)"></div>
     <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">REUTILIZAR TAG</span>
     <div style="flex:1;height:1px;background:var(--borda)"></div>
@@ -3478,7 +3419,7 @@ select option{background:var(--bg2)}
     </p>
     <div class="epc-wrap">
       <input class="epc-input" id="epcDesvincular" type="text"
-        placeholder="Aproxime a tag ou cole o UID..."
+        placeholder="Cole o UID da tag aqui..."
         autocomplete="off" autocorrect="off" spellcheck="false"
         oninput="onEpcDesvincular(this.value)"/>
       <button class="epc-limpar" onclick="clearField('epcDesvincular')">✕</button>
