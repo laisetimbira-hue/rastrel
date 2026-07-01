@@ -176,10 +176,17 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Restaurar painel de expedição se havia OC ativa antes do app recarregar
   if (pedidoAtivo) {
-    g('pedidoForm').style.display = 'none';
+    g('pedidoForm').style.display        = 'none';
     g('conferenciaPainel').style.display = 'block';
-    g('pedidoInfo').textContent = pedidoAtivo.numero;
+    g('pedidoInfo').textContent          = pedidoAtivo.numero;
+    if(pedidoAtivo.itens) itensOC = pedidoAtivo.itens;
     atualizarKpis();
+    renderProgressoCultivares();
+  } else {
+    // Formulário de nova OC começa oculto — aparece ao tocar no botão
+    _formNovaOCVisivel = false;
+    const formOC = g('formNovaOC');
+    if(formOC) formOC.style.display = 'none';
   }
 
   // Deep link via NFC: se a URL contém ?bag=NUMERO, abre o bag direto
@@ -444,7 +451,7 @@ function goTab(name) {
   if(name==='lotes') carregarLotes();
   if(name==='mapa') carregarMapa();
   if(name==='vincular') carregarBagsPendentes('__manual__');
-  if(name==='expedicao') carregarHistoricoExpedicoes();
+  if(name==='expedicao') { carregarOCsAguardando(); carregarHistoricoExpedicoes(); }
   fecharDrawer();
   window.scrollTo(0,0);
 }
@@ -584,6 +591,135 @@ function limparVincular() {
 }
 
 
+let _formNovaOCVisivel = true;
+
+function toggleFormNovaOC() {
+  const form = g('formNovaOC');
+  _formNovaOCVisivel = !_formNovaOCVisivel;
+  form.style.display = _formNovaOCVisivel ? 'block' : 'none';
+  g('btnNovaOC').innerHTML = _formNovaOCVisivel
+    ? '<i class="ti ti-x"></i> Cancelar'
+    : '<i class="ti ti-plus"></i> Nova ordem de carregamento';
+}
+
+async function criarPedido() {
+  if(!db){ flash('Configure o Firebase primeiro','err'); return; }
+  const num = g('numPedido').value.trim();
+  if(!num){ flash('Informe o número da OC','err'); return; }
+  if(!itensOC.length){ flash('Adicione pelo menos uma cultivar','err'); return; }
+
+  // Salvar como "aguardando" — não inicia conferência ainda
+  await addDoc(collection(db,'pedidos_carga'),{
+    numero_pedido:   num,
+    placa_veiculo:   g('placa').value.trim(),
+    motorista:       g('motorista').value.trim(),
+    itens_esperados: itensOC,
+    status:          'aguardando',
+    criado_em:       serverTimestamp(),
+  });
+
+  flash('OC ' + num + ' criada — aguardando caminhão', 'ok');
+
+  // Limpar formulário
+  ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
+  itensOC = [];
+  renderItensOC();
+  _formNovaOCVisivel = false;
+  toggleFormNovaOC();
+
+  carregarOCsAguardando();
+}
+
+async function carregarOCsAguardando() {
+  if(!db) return;
+  const snap = await db.collection('pedidos_carga')
+    .where('status','==','aguardando')
+    .orderBy('criado_em','asc').get();
+
+  const secao = g('secOCsAguardando');
+  const lista  = g('listaOCsAguardando');
+
+  if(snap.empty){
+    secao.style.display = 'none';
+    // Mostrar formulário automaticamente se não há OCs
+    if(!_formNovaOCVisivel){
+      _formNovaOCVisivel = true;
+      g('formNovaOC').style.display = 'block';
+      g('btnNovaOC').innerHTML = '<i class="ti ti-x"></i> Cancelar';
+    }
+    return;
+  }
+
+  secao.style.display = 'block';
+  lista.innerHTML = snap.docs.map(d => {
+    const oc = d.data();
+    const itensStr = (oc.itens_esperados||[]).map(i=>
+      `${i.cultivar} ${i.quantidade}bg`).join(' · ');
+    return `<div class="lote-card" style="margin-bottom:10px">
+      <div class="lote-card-topo">
+        <div>
+          <div class="lote-num">${oc.numero_pedido}</div>
+          <div class="lote-sub">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
+          <div class="lote-sub" style="color:var(--texto3);margin-top:2px">${itensStr}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          <button class="btn btn-verde" style="padding:8px 14px;font-size:14px"
+            onclick="iniciarConferencia('${d.id}')">
+            <i class="ti ti-truck"></i> Iniciar
+          </button>
+          <button class="btn btn-verm" style="padding:6px 14px;font-size:13px"
+            onclick="cancelarOC('${d.id}','${oc.numero_pedido}')">
+            <i class="ti ti-trash"></i> Cancelar
+          </button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function iniciarConferencia(ocId) {
+  if(!db) return;
+
+  // Verificar se já há uma conferência ativa
+  if(pedidoAtivo){
+    flash('Já há uma conferência em andamento — finalize ou cancele primeiro','err');
+    return;
+  }
+
+  const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
+  if(!ocDoc.exists) return;
+  const oc = ocDoc.data();
+
+  // Atualizar status para conferindo
+  await db.collection('pedidos_carga').doc(ocId).update({
+    status: 'conferindo',
+    iniciado_em: serverTimestamp(),
+  });
+
+  pedidoAtivo = { id: ocId, numero: oc.numero_pedido, itens: oc.itens_esperados||[] };
+  itensOC = oc.itens_esperados || [];
+  localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
+  cargaLidos=[]; cargaDivs=[];
+
+  atualizarKpis();
+  renderLidos();
+  renderProgressoCultivares();
+
+  g('pedidoInfo').textContent = oc.numero_pedido + (oc.placa_veiculo ? ' · ' + oc.placa_veiculo : '');
+  g('pedidoForm').style.display        = 'none';
+  g('conferenciaPainel').style.display = 'block';
+  g('epcCarga').focus();
+  flash('Conferência iniciada — ' + oc.numero_pedido, 'ok');
+}
+
+async function cancelarOC(ocId, numero) {
+  if(!confirm('Cancelar a OC ' + numero + '?')) return;
+  await db.collection('pedidos_carga').doc(ocId).update({ status: 'cancelado' });
+  flash('OC ' + numero + ' cancelada', 'ok');
+  carregarOCsAguardando();
+  carregarHistoricoExpedicoes();
+}
+
 // ── GESTÃO DOS ITENS ESPERADOS DA OC ──
 function adicionarItemOC() {
   const cultivar = g('novoItemCultivar').value.trim();
@@ -625,35 +761,6 @@ function renderItensOC() {
     </div>`).join('');
 }
 
-async function criarPedido() {
-  if(!db){ flash('Configure o Firebase primeiro','err'); return; }
-  const num = g('numPedido').value.trim();
-  if(!num){ flash('Informe o número da OC','err'); return; }
-  if(!itensOC.length){ flash('Adicione pelo menos uma cultivar','err'); return; }
-
-  const ref = await addDoc(collection(db,'pedidos_carga'),{
-    numero_pedido:  num,
-    placa_veiculo:  g('placa').value.trim(),
-    motorista:      g('motorista').value.trim(),
-    itens_esperados: itensOC,
-    status:         'conferindo',
-    criado_em:      serverTimestamp(),
-  });
-
-  pedidoAtivo = { id: ref.id, numero: num, itens: itensOC };
-  localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
-  cargaLidos=[]; cargaDivs=[];
-
-  atualizarKpis();
-  renderLidos();
-  renderProgressoCultivares();
-
-  g('pedidoInfo').textContent = num + (g('placa').value ? ' · ' + g('placa').value : '');
-  g('conferenciaPainel').style.display = 'block';
-  g('pedidoForm').style.display = 'none';
-  g('epcCarga').focus();
-  flash('Conferência iniciada!', 'ok');
-}
 async function registrarBagNaCarga(epc) {
   const snap=await getDocs(query(collection(db,'bags'),where('epc','==',epc)));
   const op=localStorage.getItem('operador')||'Operador';
@@ -963,6 +1070,7 @@ function cancelarPedido() {
   ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
   atualizarKpis();
   renderItensOC();
+  carregarOCsAguardando();
   carregarHistoricoExpedicoes();
 }
 
@@ -972,7 +1080,7 @@ async function carregarHistoricoExpedicoes() {
   el.innerHTML = '<p class="vazio">Carregando...</p>';
 
   const snap = await db.collection('pedidos_carga')
-    .where('status','in',['expedido','divergencia'])
+    .where('status','in',['expedido','divergencia','cancelado'])
     .orderBy('criado_em','desc')
     .limit(20).get();
 
@@ -985,12 +1093,10 @@ async function carregarHistoricoExpedicoes() {
     const oc = d.data();
     const data = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
     const hora = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
-    const stCls = oc.status === 'divergencia' ? 'tag-vermelho' : 'tag-verde';
-    const stTxt = oc.status === 'divergencia' ? 'Com diverg.' : 'OK';
-
-    // Itens esperados
-    const itensStr = (oc.itens_esperados||[]).map(i=>
-      `${i.cultivar} ${i.quantidade}bg`).join(' · ') || '—';
+    const stMap = { expedido:'tag-verde', divergencia:'tag-vermelho', cancelado:'tag-cinza' };
+    const stTxt = { expedido:'OK', divergencia:'Com diverg.', cancelado:'Cancelada' };
+    const stCls = stMap[oc.status]||'tag-cinza';
+    const itensStr = (oc.itens_esperados||[]).map(i=>`${i.cultivar} ${i.quantidade}bg`).join(' · ') || '—';
 
     return `<div class="lote-card" onclick="abrirHistoricoOC('${d.id}')">
       <div class="lote-card-topo">
@@ -999,7 +1105,7 @@ async function carregarHistoricoExpedicoes() {
           <div class="lote-sub">${oc.placa_veiculo||'—'} · ${data} ${hora}</div>
           <div class="lote-sub" style="margin-top:2px;color:var(--texto3)">${itensStr}</div>
         </div>
-        <span class="tag ${stCls}">${stTxt}</span>
+        <span class="tag ${stCls}">${stTxt[oc.status]||oc.status}</span>
       </div>
     </div>`;
   }).join('');
@@ -3786,56 +3892,70 @@ select option{background:var(--bg2)}
 <!-- ══ EXPEDIÇÃO ══ -->
 <main class="screen" id="screen-expedicao">
   <div class="pg-titulo">Expedição</div>
-  <div class="pg-sub">Crie a ordem e confira o carregamento</div>
+  <div class="pg-sub">Crie ordens e inicie a conferência quando o caminhão chegar</div>
 
-  <!-- FORMULÁRIO NOVA OC -->
+  <!-- FORMULÁRIO NOVA OC — colapsável -->
   <div id="pedidoForm">
-    <div class="secao">
-      <div class="secao-titulo"><i class="ti ti-truck"></i> Nova ordem de carregamento</div>
-      <div class="campo">
-        <label>N° da ordem de carregamento</label>
-        <input id="numPedido" type="text" placeholder="Ex: OC-001"/>
-      </div>
-      <div class="campo-linha">
-        <div>
-          <label>Cliente</label>
-          <input id="placa" type="text" placeholder="Ex: Cooperativa XYZ"/>
-        </div>
-        <div>
-          <label>Motorista</label>
-          <input id="motorista" type="text" placeholder="Nome"/>
-        </div>
-      </div>
+
+    <!-- OCs aguardando -->
+    <div id="secOCsAguardando" style="display:none;margin-bottom:4px">
+      <div class="secao-label">AGUARDANDO CAMINHÃO</div>
+      <div id="listaOCsAguardando"></div>
     </div>
 
-    <!-- Itens esperados -->
-    <div class="secao">
-      <div class="secao-titulo"><i class="ti ti-list-check"></i> O que deve ser carregado</div>
-      <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;line-height:1.5">
-        Adicione cultivar por cultivar com a quantidade de bags esperada.
-      </p>
-      <div id="itensEsperados"></div>
-      <div class="campo-linha" style="margin-top:10px">
-        <div style="flex:2">
-          <label>Cultivar</label>
-          <input id="novoItemCultivar" type="text" placeholder="Ex: Zeus" list="listaCultivares"/>
+    <!-- Botão para abrir/fechar formulário -->
+    <button class="btn btn-azul" id="btnNovaOC" onclick="toggleFormNovaOC()">
+      <i class="ti ti-plus"></i> Nova ordem de carregamento
+    </button>
+
+    <!-- Formulário (oculto por padrão se já houver OCs) -->
+    <div id="formNovaOC" style="margin-top:12px">
+      <div class="secao">
+        <div class="secao-titulo"><i class="ti ti-truck"></i> Nova ordem</div>
+        <div class="campo">
+          <label>N° da ordem de carregamento</label>
+          <input id="numPedido" type="text" placeholder="Ex: OC-001"/>
         </div>
-        <div style="flex:1">
-          <label>Qtd bags</label>
-          <input id="novoItemQtd" type="number" placeholder="Ex: 5" min="1"/>
+        <div class="campo-linha">
+          <div>
+            <label>Cliente</label>
+            <input id="placa" type="text" placeholder="Ex: Cooperativa XYZ"/>
+          </div>
+          <div>
+            <label>Motorista</label>
+            <input id="motorista" type="text" placeholder="Nome"/>
+          </div>
         </div>
       </div>
-      <button class="btn btn-cinza" onclick="adicionarItemOC()" style="margin-top:8px">
-        <i class="ti ti-plus"></i> Adicionar cultivar
+
+      <div class="secao">
+        <div class="secao-titulo"><i class="ti ti-list-check"></i> O que deve ser carregado</div>
+        <div id="itensEsperados"></div>
+        <div class="campo-linha" style="margin-top:10px">
+          <div style="flex:2">
+            <label>Cultivar</label>
+            <input id="novoItemCultivar" type="text" placeholder="Ex: Zeus" list="listaCultivares"/>
+          </div>
+          <div style="flex:1">
+            <label>Qtd bags</label>
+            <input id="novoItemQtd" type="number" placeholder="5" min="1"/>
+          </div>
+        </div>
+        <button class="btn btn-cinza" onclick="adicionarItemOC()" style="margin-top:8px">
+          <i class="ti ti-plus"></i> Adicionar cultivar
+        </button>
+      </div>
+
+      <button class="btn btn-verde" onclick="criarPedido()">
+        <i class="ti ti-clipboard-check"></i> Salvar ordem (aguardando)
+      </button>
+      <button class="btn btn-cinza" onclick="toggleFormNovaOC()" style="margin-top:8px">
+        Cancelar
       </button>
     </div>
-
-    <button class="btn btn-azul" onclick="criarPedido()">
-      <i class="ti ti-clipboard-check"></i> Iniciar conferência
-    </button>
   </div>
 
-  <!-- PAINEL DE CONFERÊNCIA -->
+  <!-- PAINEL DE CONFERÊNCIA ATIVA -->
   <div id="conferenciaPainel" style="display:none">
     <div class="pedido-bar">
       <div>
@@ -3845,13 +3965,11 @@ select option{background:var(--bg2)}
       <span class="tag tag-azul">Ativo</span>
     </div>
 
-    <!-- Progresso por cultivar -->
     <div class="secao">
       <div class="secao-titulo"><i class="ti ti-chart-bar"></i> Progresso</div>
       <div id="progressoCultivares"><p class="vazio">—</p></div>
     </div>
 
-    <!-- Leitura -->
     <div class="secao">
       <div class="secao-titulo"><i class="ti ti-antenna"></i> Leitura dos bags</div>
       <p style="font-size:13px;color:var(--texto2);margin-bottom:10px">
@@ -3866,7 +3984,6 @@ select option{background:var(--bg2)}
       </div>
     </div>
 
-    <!-- KPIs -->
     <div class="kpi-row">
       <div class="kpi">
         <div class="kpi-val" id="kLidos" style="color:var(--verde)">0</div>
@@ -3882,7 +3999,6 @@ select option{background:var(--bg2)}
       </div>
     </div>
 
-    <!-- Divergências -->
     <div id="divWrap" style="display:none" class="secao">
       <div class="secao-titulo" style="color:var(--vermelho)">
         <i class="ti ti-alert-triangle"></i> Divergências
@@ -3890,7 +4006,6 @@ select option{background:var(--bg2)}
       <div id="divList"></div>
     </div>
 
-    <!-- Bags lidos com cultivar e lote -->
     <div class="secao">
       <div class="secao-titulo"><i class="ti ti-checks"></i> Bags conferidos</div>
       <div id="cargaLidosList"><p class="vazio">Nenhum bag lido ainda.</p></div>
@@ -3900,18 +4015,18 @@ select option{background:var(--bg2)}
       <i class="ti ti-check"></i> Confirmar expedição
     </button>
     <button class="btn btn-cinza" onclick="cancelarPedido()">
-      <i class="ti ti-x"></i> Cancelar
+      <i class="ti ti-x"></i> Cancelar conferência
     </button>
   </div>
 
-  <!-- PAINEL DE DEVOLUÇÃO DE TAGS -->
+  <!-- DEVOLUÇÃO DE TAGS -->
   <div id="painelDevolucao" style="display:none;margin-top:4px">
     <div class="secao" style="border-color:rgba(251,191,36,.3)">
       <div class="secao-titulo" style="color:var(--amarelo)">
         <i class="ti ti-tag-off"></i> Remova e libere as tags
       </div>
       <p style="font-size:14px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
-        Retire a tag de cada bag expedido e toque <strong style="color:var(--texto)">Liberar tag</strong> para disponibilizar para o próximo lote.
+        Retire a tag de cada bag expedido e toque <strong>Liberar tag</strong>.
       </p>
       <div id="painelDevolucaoLista"></div>
       <button class="btn btn-cinza" style="margin-top:12px" onclick="g('painelDevolucao').style.display='none'">
@@ -3920,7 +4035,7 @@ select option{background:var(--bg2)}
     </div>
   </div>
 
-  <!-- HISTÓRICO DE EXPEDIÇÕES -->
+  <!-- HISTÓRICO -->
   <div style="display:flex;align-items:center;gap:10px;margin:20px 0 8px">
     <div style="flex:1;height:1px;background:var(--borda)"></div>
     <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">HISTÓRICO</span>
