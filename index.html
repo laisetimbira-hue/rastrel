@@ -2378,11 +2378,34 @@ body{
   padding:0 16px;
   padding-left:calc(16px + env(safe-area-inset-left));
   padding-right:calc(16px + env(safe-area-inset-right));
-  height:56px;
+  height:64px;
   display:flex;
   align-items:center;
   justify-content:space-between;
+  gap:8px;
   position:sticky;top:0;z-index:300;
+}
+.hamburger{
+  background:none;
+  border:none;
+  outline:none;
+  color:var(--texto);
+  font-size:38px;
+  line-height:1;
+  cursor:pointer;
+  padding:6px 10px 6px 0;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+  min-width:52px;min-height:52px;
+  transition:color .15s;
+}
+.hamburger:active{color:var(--azul)}
+.header-titulo{
+  font-family:'Barlow Condensed',sans-serif;
+  font-weight:800;font-size:22px;
+  letter-spacing:-.2px;color:var(--texto);
+  flex:1;
 }
 .logo{
   font-family:'Barlow Condensed',sans-serif;
