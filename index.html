@@ -143,11 +143,16 @@ const EV_COR = {
 };
 
 let pedidoAtivo=null, cargaLidos=[], cargaDivs=[], epcTimer=null;
+let itensOC = []; // itens esperados na OC: [{cultivar, quantidade}]
 
 // Restaurar expedição ativa do localStorage (persiste entre recarregamentos do Safari)
 const _expedicaoSalva = localStorage.getItem('expedicao_ativa');
 if (_expedicaoSalva) {
-  try { pedidoAtivo = JSON.parse(_expedicaoSalva); } catch(e) {}
+  try {
+    pedidoAtivo = JSON.parse(_expedicaoSalva);
+    // Restaurar itens esperados se estavam salvos
+    if (pedidoAtivo?.itens) itensOC = pedidoAtivo.itens;
+  } catch(e) {}
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -439,6 +444,7 @@ function goTab(name) {
   if(name==='lotes') carregarLotes();
   if(name==='mapa') carregarMapa();
   if(name==='vincular') carregarBagsPendentes('__manual__');
+  if(name==='expedicao') carregarHistoricoExpedicoes();
   fecharDrawer();
   window.scrollTo(0,0);
 }
@@ -578,38 +584,85 @@ function limparVincular() {
 }
 
 
+// ── GESTÃO DOS ITENS ESPERADOS DA OC ──
+function adicionarItemOC() {
+  const cultivar = g('novoItemCultivar').value.trim();
+  const qtd      = parseInt(g('novoItemQtd').value);
+  if(!cultivar){ flash('Informe a cultivar','err'); return; }
+  if(!qtd || qtd < 1){ flash('Informe a quantidade','err'); return; }
+
+  // Verificar se cultivar já está na lista
+  const existente = itensOC.find(i => i.cultivar.toLowerCase() === cultivar.toLowerCase());
+  if(existente){ flash('Cultivar já adicionada — edite a quantidade','warn'); return; }
+
+  itensOC.push({ cultivar, quantidade: qtd });
+  g('novoItemCultivar').value = '';
+  g('novoItemQtd').value = '';
+  renderItensOC();
+}
+
+function removerItemOC(idx) {
+  itensOC.splice(idx, 1);
+  renderItensOC();
+}
+
+function renderItensOC() {
+  const el = g('itensEsperados');
+  if(!itensOC.length){
+    el.innerHTML = '<p class="vazio" style="margin-bottom:8px">Nenhuma cultivar adicionada ainda.</p>';
+    return;
+  }
+  el.innerHTML = itensOC.map((item, idx) => `
+    <div class="linha-item">
+      <div>
+        <span class="item-num">${item.cultivar}</span>
+        <span class="item-sub">${item.quantidade} bag${item.quantidade>1?'s':''}</span>
+      </div>
+      <button onclick="removerItemOC(${idx})" style="background:none;border:none;
+        color:var(--vermelho);font-size:20px;cursor:pointer;padding:4px">
+        <i class="ti ti-trash"></i>
+      </button>
+    </div>`).join('');
+}
+
 async function criarPedido() {
   if(!db){ flash('Configure o Firebase primeiro','err'); return; }
-  const num=g('numPedido').value.trim();
-  if(!num){ flash('Informe o número do pedido','err'); return; }
-  const ref=await addDoc(collection(db,'pedidos_carga'),{
-    numero_pedido:num, placa_veiculo:g('placa').value.trim(),
-    motorista:g('motorista').value.trim(), status:'conferindo',
-    criado_em:serverTimestamp(),
+  const num = g('numPedido').value.trim();
+  if(!num){ flash('Informe o número da OC','err'); return; }
+  if(!itensOC.length){ flash('Adicione pelo menos uma cultivar','err'); return; }
+
+  const ref = await addDoc(collection(db,'pedidos_carga'),{
+    numero_pedido:  num,
+    placa_veiculo:  g('placa').value.trim(),
+    motorista:      g('motorista').value.trim(),
+    itens_esperados: itensOC,
+    status:         'conferindo',
+    criado_em:      serverTimestamp(),
   });
-  pedidoAtivo={id:ref.id,numero:num};
+
+  pedidoAtivo = { id: ref.id, numero: num, itens: itensOC };
   localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
   cargaLidos=[]; cargaDivs=[];
-  atualizarKpis(); renderLidos();
-  g('pedidoInfo').textContent=num+(g('placa').value?' · '+g('placa').value:'');
-  g('conferenciaPainel').style.display='block';
-  g('pedidoForm').style.display='none';
+
+  atualizarKpis();
+  renderLidos();
+  renderProgressoCultivares();
+
+  g('pedidoInfo').textContent = num + (g('placa').value ? ' · ' + g('placa').value : '');
+  g('conferenciaPainel').style.display = 'block';
+  g('pedidoForm').style.display = 'none';
   g('epcCarga').focus();
-  flash('Pedido iniciado','ok');
-};
+  flash('Conferência iniciada!', 'ok');
+}
 async function registrarBagNaCarga(epc) {
   const snap=await getDocs(query(collection(db,'bags'),where('epc','==',epc)));
   const op=localStorage.getItem('operador')||'Operador';
   const dev=localStorage.getItem('dispositivo')||'App';
   if(snap.empty){
     if(!navigator.onLine){
-      // Offline: pode ser que o bag exista no servidor mas não esteja no
-      // cache deste celular ainda. Avisa de forma diferente para não
-      // o operador pensar que é divergência real de carga.
-      flash('⚠️ Offline: tag não encontrada no cache deste celular. Pode existir no servidor — confirme com cautela.','warn');
-      if(!cargaDivs.find(d=>d.epc===epc)) cargaDivs.push({epc,motivo:'Não encontrada no cache offline (verificar depois)'});
-      atualizarKpis(); renderDivs();
-      return;
+      flash('⚠️ Offline: tag não encontrada no cache — confirme com cautela.','warn');
+      if(!cargaDivs.find(d=>d.epc===epc)) cargaDivs.push({epc,motivo:'Não encontrada offline'});
+      atualizarKpis(); renderDivs(); return;
     }
     if(!cargaDivs.find(d=>d.epc===epc)) cargaDivs.push({epc,motivo:'Tag não cadastrada'});
     atualizarKpis(); renderDivs();
@@ -617,83 +670,173 @@ async function registrarBagNaCarga(epc) {
   }
   const bagDoc=snap.docs[0], bag=bagDoc.data();
   if(cargaLidos.find(b=>b.epc===epc)){ flash('Tag já lida','warn'); return; }
-  if(!navigator.onLine){
-    adicionarNaFila('Conferência de carga — bag ' + bag.numero_bag);
+
+  // Validar se a cultivar está na lista esperada
+  const itens = pedidoAtivo?.itens || [];
+  const cultivarBag = (bag.cultivar_nome||'').toLowerCase();
+  const itemEsperado = itens.find(i => cultivarBag.includes(i.cultivar.toLowerCase()) || i.cultivar.toLowerCase().includes(cultivarBag.split(' ')[0].toLowerCase()));
+  const jaLidosDessaCultivar = cargaLidos.filter(b => b.cultivar_key === (itemEsperado?.cultivar||'?')).length;
+
+  let statusValidacao = 'lido';
+  if(itens.length > 0) {
+    if(!itemEsperado){
+      // Cultivar não estava na lista
+      flash('⚠️ ' + (bag.cultivar_nome||'?') + ' não estava na ordem de carregamento!','err');
+      if(!cargaDivs.find(d=>d.epc===epc))
+        cargaDivs.push({epc, motivo: (bag.cultivar_nome||'?') + ' não estava na OC'});
+      statusValidacao = 'divergencia';
+    } else if(jaLidosDessaCultivar >= itemEsperado.quantidade){
+      // Quantidade excedida
+      flash('⚠️ Quantidade de ' + itemEsperado.cultivar + ' já atingida!','err');
+      if(!cargaDivs.find(d=>d.epc===epc))
+        cargaDivs.push({epc, motivo: itemEsperado.cultivar + ' em excesso'});
+      statusValidacao = 'divergencia';
+    }
   }
+
+  if(!navigator.onLine) adicionarNaFila('Conferência — ' + bag.numero_bag);
+
   await addDoc(collection(db,'movimentacoes'),{
     bag_id:bagDoc.id, numero_bag:bag.numero_bag, tipo_evento:'conferencia_carga',
     observacao:`Carga — pedido ${pedidoAtivo.numero}`, operador:op, dispositivo:dev,
     criado_em:serverTimestamp(),
   });
   await db.collection('pedidos_carga').doc(pedidoAtivo.id).collection('itens').add({
-    bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc, status_validacao:'lido',
+    bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc,
+    cultivar: bag.cultivar_nome||'—',
+    lote: bag.lote||'—',
+    status_validacao: statusValidacao,
     criado_em:serverTimestamp(),
   });
-  cargaLidos.push({epc,numero:bag.numero_bag,cultivar:bag.cultivar_nome||'—'});
-  atualizarKpis(); renderLidos();
-  flash(bag.numero_bag+' — '+(bag.cultivar_nome||''),'ok');
+
+  cargaLidos.push({
+    epc, numero:bag.numero_bag,
+    cultivar:bag.cultivar_nome||'—',
+    lote: bag.lote||'—',
+    cultivar_key: itemEsperado?.cultivar||'?',
+    status: statusValidacao,
+  });
+
+  atualizarKpis(); renderLidos(); renderProgressoCultivares();
+  if(statusValidacao === 'lido'){
+    renderDivs();
+    flash('✓ ' + bag.numero_bag + ' · ' + (bag.cultivar_nome||'') + ' · ' + (bag.lote||''), 'ok');
+  } else {
+    atualizarKpis(); renderDivs();
+  }
 }
+
 async function registrarBagNaCarga_peloNumero(numeroBag) {
   if(!pedidoAtivo){ flash('Nenhuma expedição ativa','err'); return; }
-
-  // Verificar se bag já foi lido nesta carga
   if(cargaLidos.find(b=>b.numero===numeroBag)){
-    flash(numeroBag + ' já foi registrado nesta carga','warn');
-    return;
+    flash(numeroBag + ' já foi registrado nesta carga','warn'); return;
   }
-
   const op  = localStorage.getItem('operador')  || 'Operador';
   const dev = localStorage.getItem('dispositivo')|| 'App';
-
-  // Buscar bag pelo número
-  const snap = await db.collection('bags')
-    .where('numero_bag','==',numeroBag).get();
-
+  const snap = await db.collection('bags').where('numero_bag','==',numeroBag).get();
   if(snap.empty){
-    flash(numeroBag + ' não encontrado no sistema','err');
+    flash(numeroBag + ' não encontrado','err');
     if(!cargaDivs.find(d=>d.epc===numeroBag))
       cargaDivs.push({epc:numeroBag, motivo:'Bag não encontrado'});
-    atualizarKpis(); renderDivs();
-    return;
+    atualizarKpis(); renderDivs(); return;
   }
-
   const bagDoc = snap.docs[0];
   const bag    = bagDoc.data();
   const epc    = bag.epc || ('URL-' + numeroBag);
 
+  const itens = pedidoAtivo?.itens || [];
+  const cultivarBag = (bag.cultivar_nome||'').toLowerCase();
+  const itemEsperado = itens.find(i => cultivarBag.includes(i.cultivar.toLowerCase()) || i.cultivar.toLowerCase().includes(cultivarBag.split(' ')[0].toLowerCase()));
+  const jaLidosDessaCultivar = cargaLidos.filter(b => b.cultivar_key === (itemEsperado?.cultivar||'?')).length;
+
+  let statusValidacao = 'lido';
+  if(itens.length > 0 && !itemEsperado){
+    flash('⚠️ ' + (bag.cultivar_nome||'?') + ' não estava na ordem!','err');
+    cargaDivs.push({epc, motivo: (bag.cultivar_nome||'?') + ' não estava na OC'});
+    statusValidacao = 'divergencia';
+  } else if(itens.length > 0 && jaLidosDessaCultivar >= itemEsperado?.quantidade){
+    flash('⚠️ Quantidade de ' + itemEsperado.cultivar + ' já atingida!','err');
+    cargaDivs.push({epc, motivo: itemEsperado.cultivar + ' em excesso'});
+    statusValidacao = 'divergencia';
+  }
+
   await addDoc(collection(db,'movimentacoes'),{
-    bag_id:bagDoc.id, numero_bag:bag.numero_bag,
-    tipo_evento:'conferencia_carga',
-    observacao:`Carga via NFC — pedido ${pedidoAtivo.numero}`,
-    operador:op, dispositivo:dev,
+    bag_id:bagDoc.id, numero_bag:bag.numero_bag, tipo_evento:'conferencia_carga',
+    observacao:`Carga via NFC — pedido ${pedidoAtivo.numero}`, operador:op, dispositivo:dev,
     criado_em:serverTimestamp(),
   });
-  await db.collection('pedidos_carga').doc(pedidoAtivo.id)
-    .collection('itens').add({
-      bag_id:bagDoc.id, numero_bag:bag.numero_bag,
-      epc, status_validacao:'lido',
-      criado_em:serverTimestamp(),
-    });
+  await db.collection('pedidos_carga').doc(pedidoAtivo.id).collection('itens').add({
+    bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc,
+    cultivar: bag.cultivar_nome||'—',
+    lote: bag.lote||'—',
+    status_validacao: statusValidacao,
+    criado_em:serverTimestamp(),
+  });
 
-  cargaLidos.push({epc, numero:bag.numero_bag, cultivar:bag.cultivar_nome||'—'});
-  atualizarKpis(); renderLidos();
-  flash('✓ ' + bag.numero_bag + ' — ' + (bag.cultivar_nome||'') + ' adicionado à carga','ok');
+  cargaLidos.push({
+    epc, numero:bag.numero_bag,
+    cultivar:bag.cultivar_nome||'—',
+    lote: bag.lote||'—',
+    cultivar_key: itemEsperado?.cultivar||'?',
+    status: statusValidacao,
+  });
+
+  atualizarKpis(); renderLidos(); renderProgressoCultivares(); renderDivs();
+  flash('✓ ' + bag.numero_bag + ' · ' + (bag.cultivar_nome||'') + ' · ' + (bag.lote||''), 'ok');
 }
 
 function atualizarKpis(){
-  g('kLidos').textContent=cargaLidos.length;
-  g('kOk').textContent=cargaLidos.length-cargaDivs.length;
-  g('kDiv').textContent=cargaDivs.length;
+  g('kLidos').textContent = cargaLidos.length;
+  g('kOk').textContent    = cargaLidos.filter(b=>b.status!=='divergencia').length;
+  g('kDiv').textContent   = cargaDivs.length;
 }
+
+function renderProgressoCultivares() {
+  const el = g('progressoCultivares');
+  if(!el) return;
+  const itens = pedidoAtivo?.itens || [];
+  if(!itens.length){ el.innerHTML = '<p class="vazio">Sem lista pré-definida</p>'; return; }
+
+  el.innerHTML = itens.map(item => {
+    const lidos = cargaLidos.filter(b =>
+      b.cultivar.toLowerCase().includes(item.cultivar.toLowerCase()) ||
+      item.cultivar.toLowerCase().includes(b.cultivar.toLowerCase().split(' ')[0])
+    );
+    const qtdLida = lidos.length;
+    const qtdEsp  = item.quantidade;
+    const pct     = Math.min(100, Math.round((qtdLida/qtdEsp)*100));
+    const cor     = qtdLida >= qtdEsp ? 'var(--verde)' : qtdLida > 0 ? 'var(--amarelo)' : 'var(--texto3)';
+    const icone   = qtdLida >= qtdEsp ? '✓' : '→';
+
+    // Listar lotes conferidos desta cultivar
+    const lotesList = lidos.map(b => `<span class="bag-chip">${b.numero}</span>`).join('');
+
+    return `<div style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;color:var(--texto)">${item.cultivar}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:700;color:${cor}">${icone} ${qtdLida}/${qtdEsp}</span>
+      </div>
+      <div style="height:6px;background:var(--bg4);border-radius:3px;overflow:hidden;margin-bottom:6px">
+        <div style="height:100%;width:${pct}%;background:${cor};border-radius:3px;transition:width .3s"></div>
+      </div>
+      ${lotesList ? `<div class="expedicao-bags">${lotesList}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
 function renderLidos(){
   const el=g('cargaLidosList');
   if(!cargaLidos.length){ el.innerHTML='<p class="vazio">Nenhum bag lido ainda.</p>'; return; }
-  el.innerHTML=cargaLidos.map(b=>`
+  el.innerHTML=[...cargaLidos].reverse().map(b=>`
     <div class="linha-item">
-      <div><span class="item-num">${b.numero}</span><span class="item-sub">${b.cultivar}</span></div>
-      <span class="tag tag-verde">OK</span>
+      <div>
+        <span class="item-num">${b.numero}</span>
+        <span class="item-sub">${b.cultivar} · ${b.lote||'—'}</span>
+      </div>
+      <span class="tag ${b.status==='divergencia'?'tag-vermelho':'tag-verde'}">${b.status==='divergencia'?'Diverg.':'OK'}</span>
     </div>`).join('');
 }
+
 function renderDivs(){
   const wrap=g('divWrap');
   if(!cargaDivs.length){ wrap.style.display='none'; return; }
@@ -813,13 +956,104 @@ async function devolverTagRapido(bagId, epc, numeroBag) {
   }
 }
 function cancelarPedido() {
-  pedidoAtivo=null; cargaLidos=[]; cargaDivs=[];
+  pedidoAtivo=null; cargaLidos=[]; cargaDivs=[]; itensOC=[];
   localStorage.removeItem('expedicao_ativa');
   g('conferenciaPainel').style.display='none';
   g('pedidoForm').style.display='block';
   ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
   atualizarKpis();
-};
+  renderItensOC();
+  carregarHistoricoExpedicoes();
+}
+
+async function carregarHistoricoExpedicoes() {
+  const el = g('historicoExpedicoes');
+  if(!el || !db) return;
+  el.innerHTML = '<p class="vazio">Carregando...</p>';
+
+  const snap = await db.collection('pedidos_carga')
+    .where('status','in',['expedido','divergencia'])
+    .orderBy('criado_em','desc')
+    .limit(20).get();
+
+  if(snap.empty){
+    el.innerHTML = '<p class="vazio">Nenhuma expedição finalizada ainda.</p>';
+    return;
+  }
+
+  el.innerHTML = snap.docs.map(d => {
+    const oc = d.data();
+    const data = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
+    const hora = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
+    const stCls = oc.status === 'divergencia' ? 'tag-vermelho' : 'tag-verde';
+    const stTxt = oc.status === 'divergencia' ? 'Com diverg.' : 'OK';
+
+    // Itens esperados
+    const itensStr = (oc.itens_esperados||[]).map(i=>
+      `${i.cultivar} ${i.quantidade}bg`).join(' · ') || '—';
+
+    return `<div class="lote-card" onclick="abrirHistoricoOC('${d.id}')">
+      <div class="lote-card-topo">
+        <div>
+          <div class="lote-num">${oc.numero_pedido}</div>
+          <div class="lote-sub">${oc.placa_veiculo||'—'} · ${data} ${hora}</div>
+          <div class="lote-sub" style="margin-top:2px;color:var(--texto3)">${itensStr}</div>
+        </div>
+        <span class="tag ${stCls}">${stTxt}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function abrirHistoricoOC(ocId) {
+  if(!db) return;
+  const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
+  if(!ocDoc.exists) return;
+  const oc = ocDoc.data();
+
+  const itensSnap = await db.collection('pedidos_carga')
+    .doc(ocId).collection('itens').orderBy('criado_em').get();
+
+  const data = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
+  const itensEsperados = (oc.itens_esperados||[]).map(i=>
+    `<div class="linha-item">
+      <span class="item-num">${i.cultivar}</span>
+      <span class="tag tag-azul">${i.quantidade} bag${i.quantidade>1?'s':''}</span>
+    </div>`).join('');
+
+  const itensConferidos = itensSnap.docs.map(d => {
+    const item = d.data();
+    const stCls = item.status_validacao === 'divergencia' ? 'tag-vermelho' : 'tag-verde';
+    return `<div class="linha-item">
+      <div>
+        <span class="item-num">${item.numero_bag}</span>
+        <span class="item-sub">${item.cultivar||'—'} · ${item.lote||'—'}</span>
+      </div>
+      <span class="tag ${stCls}">${item.status_validacao === 'divergencia' ? 'Diverg.' : 'OK'}</span>
+    </div>`;
+  }).join('');
+
+  // Mostrar modal
+  g('modalTitulo').textContent  = oc.numero_pedido;
+  g('modalTotal').textContent   = itensSnap.size;
+  g('modalOcupado').textContent = data;
+  g('modalLivre').textContent   = '—';
+
+  g('modalBags').innerHTML = `
+    <div style="margin-bottom:12px">
+      <div class="secao-label">Cliente / Motorista</div>
+      <div style="font-size:14px;color:var(--texto2)">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
+    </div>
+    ${itensEsperados ? `<div class="secao-label" style="margin-top:10px">Pedido</div>${itensEsperados}` : ''}
+    <div class="secao-label" style="margin-top:14px">Bags conferidos</div>
+    ${itensConferidos || '<p class="vazio">Nenhum</p>'}
+    <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:12px">
+      <i class="ti ti-x"></i> Fechar
+    </button>`;
+
+  g('modalPosicao').style.display = 'flex';
+}
+
 
 async function buscarBag() {
   if(!db){ flash('Configure o Firebase primeiro','err'); return; }
@@ -3551,12 +3785,13 @@ select option{background:var(--bg2)}
 
 <!-- ══ EXPEDIÇÃO ══ -->
 <main class="screen" id="screen-expedicao">
-  <div class="pg-titulo">Conferência</div>
-  <div class="pg-sub">Registre e valide o carregamento</div>
+  <div class="pg-titulo">Expedição</div>
+  <div class="pg-sub">Crie a ordem e confira o carregamento</div>
 
+  <!-- FORMULÁRIO NOVA OC -->
   <div id="pedidoForm">
     <div class="secao">
-      <div class="secao-titulo"><i class="ti ti-truck"></i> Novo carregamento</div>
+      <div class="secao-titulo"><i class="ti ti-truck"></i> Nova ordem de carregamento</div>
       <div class="campo">
         <label>N° da ordem de carregamento</label>
         <input id="numPedido" type="text" placeholder="Ex: OC-001"/>
@@ -3571,12 +3806,36 @@ select option{background:var(--bg2)}
           <input id="motorista" type="text" placeholder="Nome"/>
         </div>
       </div>
-      <button class="btn btn-azul" onclick="criarPedido()">
-        <i class="ti ti-clipboard-check"></i> Iniciar conferência
+    </div>
+
+    <!-- Itens esperados -->
+    <div class="secao">
+      <div class="secao-titulo"><i class="ti ti-list-check"></i> O que deve ser carregado</div>
+      <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;line-height:1.5">
+        Adicione cultivar por cultivar com a quantidade de bags esperada.
+      </p>
+      <div id="itensEsperados"></div>
+      <div class="campo-linha" style="margin-top:10px">
+        <div style="flex:2">
+          <label>Cultivar</label>
+          <input id="novoItemCultivar" type="text" placeholder="Ex: Zeus" list="listaCultivares"/>
+        </div>
+        <div style="flex:1">
+          <label>Qtd bags</label>
+          <input id="novoItemQtd" type="number" placeholder="Ex: 5" min="1"/>
+        </div>
+      </div>
+      <button class="btn btn-cinza" onclick="adicionarItemOC()" style="margin-top:8px">
+        <i class="ti ti-plus"></i> Adicionar cultivar
       </button>
     </div>
+
+    <button class="btn btn-azul" onclick="criarPedido()">
+      <i class="ti ti-clipboard-check"></i> Iniciar conferência
+    </button>
   </div>
 
+  <!-- PAINEL DE CONFERÊNCIA -->
   <div id="conferenciaPainel" style="display:none">
     <div class="pedido-bar">
       <div>
@@ -3586,9 +3845,18 @@ select option{background:var(--bg2)}
       <span class="tag tag-azul">Ativo</span>
     </div>
 
+    <!-- Progresso por cultivar -->
+    <div class="secao">
+      <div class="secao-titulo"><i class="ti ti-chart-bar"></i> Progresso</div>
+      <div id="progressoCultivares"><p class="vazio">—</p></div>
+    </div>
+
+    <!-- Leitura -->
     <div class="secao">
       <div class="secao-titulo"><i class="ti ti-antenna"></i> Leitura dos bags</div>
-      <p style="font-size:13px;color:var(--texto2);margin-bottom:10px">Aponte o leitor para cada bag carregado no caminhão.</p>
+      <p style="font-size:13px;color:var(--texto2);margin-bottom:10px">
+        Bipe cada bag carregado no caminhão.
+      </p>
       <div class="epc-wrap">
         <input class="epc-input" id="epcCarga" type="text"
           placeholder="Aguardando leitor..."
@@ -3598,6 +3866,7 @@ select option{background:var(--bg2)}
       </div>
     </div>
 
+    <!-- KPIs -->
     <div class="kpi-row">
       <div class="kpi">
         <div class="kpi-val" id="kLidos" style="color:var(--verde)">0</div>
@@ -3613,13 +3882,17 @@ select option{background:var(--bg2)}
       </div>
     </div>
 
+    <!-- Divergências -->
     <div id="divWrap" style="display:none" class="secao">
-      <div class="secao-titulo" style="color:var(--vermelho)"><i class="ti ti-alert-triangle"></i> Divergências</div>
+      <div class="secao-titulo" style="color:var(--vermelho)">
+        <i class="ti ti-alert-triangle"></i> Divergências
+      </div>
       <div id="divList"></div>
     </div>
 
+    <!-- Bags lidos com cultivar e lote -->
     <div class="secao">
-      <div class="secao-titulo"><i class="ti ti-checks"></i> Bags lidos</div>
+      <div class="secao-titulo"><i class="ti ti-checks"></i> Bags conferidos</div>
       <div id="cargaLidosList"><p class="vazio">Nenhum bag lido ainda.</p></div>
     </div>
 
@@ -3631,7 +3904,7 @@ select option{background:var(--bg2)}
     </button>
   </div>
 
-  <!-- Painel de devolução de tags após expedição -->
+  <!-- PAINEL DE DEVOLUÇÃO DE TAGS -->
   <div id="painelDevolucao" style="display:none;margin-top:4px">
     <div class="secao" style="border-color:rgba(251,191,36,.3)">
       <div class="secao-titulo" style="color:var(--amarelo)">
@@ -3646,6 +3919,15 @@ select option{background:var(--bg2)}
       </button>
     </div>
   </div>
+
+  <!-- HISTÓRICO DE EXPEDIÇÕES -->
+  <div style="display:flex;align-items:center;gap:10px;margin:20px 0 8px">
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+    <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">HISTÓRICO</span>
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+  </div>
+  <div id="historicoExpedicoes"><p class="vazio">Carregando histórico...</p></div>
+
 </main>
 
 <!-- ══ BUSCAR ══ -->
