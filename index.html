@@ -634,7 +634,7 @@ async function carregarOCsAguardando() {
   if(!db) return;
   const snap = await db.collection('pedidos_carga')
     .where('status','==','aguardando')
-    .orderBy('criado_em','asc').get();
+    .get();
 
   const secao = g('secOCsAguardando');
   const lista  = g('listaOCsAguardando');
@@ -1081,7 +1081,6 @@ async function carregarHistoricoExpedicoes() {
 
   const snap = await db.collection('pedidos_carga')
     .where('status','in',['expedido','divergencia','cancelado'])
-    .orderBy('criado_em','desc')
     .limit(20).get();
 
   if(snap.empty){
@@ -1147,7 +1146,7 @@ async function abrirHistoricoOC(ocId) {
 
   g('modalBags').innerHTML = `
     <div style="margin-bottom:12px">
-      <div class="secao-label">Cliente / Motorista</div>
+      <div class="secao-label">Cliente / Placa</div>
       <div style="font-size:14px;color:var(--texto2)">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
     </div>
     ${itensEsperados ? `<div class="secao-label" style="margin-top:10px">Pedido</div>${itensEsperados}` : ''}
@@ -3922,8 +3921,8 @@ select option{background:var(--bg2)}
             <input id="placa" type="text" placeholder="Ex: Cooperativa XYZ"/>
           </div>
           <div>
-            <label>Motorista</label>
-            <input id="motorista" type="text" placeholder="Nome"/>
+            <label>Placa do caminhão</label>
+            <input id="motorista" type="text" placeholder="Ex: ABC-1234"/>
           </div>
         </div>
       </div>
