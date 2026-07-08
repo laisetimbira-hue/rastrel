@@ -2215,43 +2215,43 @@ window.onEpcDesvincular = function(val) {
 async function desvinculaTag() {
   if(!bagParaDesvincular || !db) return;
   const bag = bagParaDesvincular;
-  const epc = g('epcDesvincular').value.trim();
+  // EPC vem do objeto bagParaDesvincular (preenchido pelo onEpcDesvincular)
+  const epc = bag.epc;
+  if(!epc){ flash('EPC não encontrado — tente ler a tag novamente','err'); return; }
 
-  if(!confirm(`Desvincular a tag "${epc}" do bag ${bag.numero_bag}?
-
-O histórico será mantido e a tag ficará disponível para reutilização.`)) return;
+  if(!confirm(`Desvincular a tag do bag ${bag.numero_bag}?\n\nO histórico será mantido e a tag ficará disponível para reutilização.`)) return;
 
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
 
-  // Salvar EPC anterior no histórico e zerar no bag
-  await db.collection('bags').doc(bag.id).update({
-    epc:           null,
-    epc_anterior:  epc,
-    status:        bag.status === 'em_estoque' ? 'em_estoque' : bag.status,
-    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-  });
+  try {
+    await db.collection('bags').doc(bag.id).update({
+      epc:           null,
+      epc_anterior:  epc,
+      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
 
-  // Registrar evento de devolução
-  await db.collection('movimentacoes').add({
-    bag_id:      bag.id,
-    numero_bag:  bag.numero_bag,
-    tipo_evento: 'devolucao_tag',
-    observacao:  `Tag devolvida — EPC ${epc} liberado para reutilização`,
-    epc_devolvido: epc,
-    operador:    op,
-    dispositivo: dev,
-    criado_em:   firebase.firestore.FieldValue.serverTimestamp(),
-  });
+    await db.collection('movimentacoes').add({
+      bag_id:        bag.id,
+      numero_bag:    bag.numero_bag,
+      tipo_evento:   'devolucao_tag',
+      observacao:    `Tag devolvida — EPC ${epc} liberado para reutilização`,
+      epc_devolvido: epc,
+      operador:      op,
+      dispositivo:   dev,
+      criado_em:     firebase.firestore.FieldValue.serverTimestamp(),
+    });
 
-  flash('Tag liberada! Regrave com o NFC Tools e vincule ao novo bag.', 'ok');
+    flash('Tag liberada! Aproxime a tag novamente para vincular a outro bag.', 'ok');
 
-  // Limpar campos
-  g('epcDesvincular').value = '';
-  g('epcDesvinculaStatus').textContent = '';
-  g('desvinculaPreview').style.display = 'none';
-  g('btnDesvincular').style.display    = 'none';
-  bagParaDesvincular = null;
+    // Limpar estado
+    g('epcDesvinculaStatus').textContent = '';
+    g('desvinculaPreview').style.display = 'none';
+    g('btnDesvincular').style.display    = 'none';
+    bagParaDesvincular = null;
+  } catch(e) {
+    flash('Erro ao desvincular: ' + e.message, 'err');
+  }
 }
 
 // ── DEEP LINK VIA NFC ──
@@ -2319,11 +2319,9 @@ async function abrirBagPorDeepLink(numeroBag) {
 }
 
 function mostrarPainelConfirmacaoNFC(bag) {
-  // Esconde listas de leitura padrão
   g('secBagsPendentes').style.display = 'none';
   g('secSemPendentes').style.display  = 'none';
 
-  // Atualizar conteúdo do painel fixo e exibir
   g('painelConfirmacaoConteudo').innerHTML = `
     <div style="background:var(--bg3);border-radius:var(--r-sm);padding:14px;margin-bottom:16px">
       <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:var(--texto);margin-bottom:4px">
@@ -2335,7 +2333,8 @@ function mostrarPainelConfirmacaoNFC(bag) {
     <p style="font-size:14px;color:var(--texto2);margin-bottom:16px;line-height:1.6">
       A tag NFC foi colada neste bag?
     </p>
-    <button class="btn btn-verde" onclick="confirmarVinculacaoNFC('${bag.id}','${bag.numero_bag}','${bag.lote||''}')">
+    <button class="btn btn-verde" id="btnConfirmarVinculo"
+      onclick="confirmarVinculacaoNFC('${bag.id}','${bag.numero_bag}','${bag.lote||''}')">
       <i class="ti ti-check"></i> Sim — vincular esta tag ao bag
     </button>`;
 
@@ -2344,10 +2343,24 @@ function mostrarPainelConfirmacaoNFC(bag) {
   painel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
-  if (!db) { flash('Firebase não conectado','err'); return; }
+let _vinculandoEmProgresso = false;
 
-  // Usar UID real lido pelo Android, ou fallback URL para deep link iOS
+async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
+  // Proteção contra duplo toque
+  if (_vinculandoEmProgresso) return;
+  _vinculandoEmProgresso = true;
+
+  // Desabilitar botão imediatamente
+  const btn = g('btnConfirmarVinculo');
+  if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Vinculando...'; }
+
+  if (!db) {
+    flash('Firebase não conectado','err');
+    _vinculandoEmProgresso = false;
+    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Sim — vincular esta tag ao bag'; }
+    return;
+  }
+
   const epcFinal = _epcLido || ('URL-' + numeroBag);
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
@@ -2375,7 +2388,7 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
       criado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
 
-    _epcLido = null; // Limpar após vincular
+    _epcLido = null;
     flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
     cancelarConfirmacaoNFC();
 
@@ -2389,6 +2402,9 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
     }
   } catch(e) {
     flash('Erro ao vincular: ' + e.message, 'err');
+    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Sim — vincular esta tag ao bag'; }
+  } finally {
+    _vinculandoEmProgresso = false;
   }
 }
 
@@ -2581,53 +2597,6 @@ function g(id){ return document.getElementById(id); }
 
 // ── LOTES ──
 
-window.onEpcDesvincular = function(val) {
-  clearTimeout(epcDesvinculaTimer);
-  const st = g('epcDesvinculaStatus');
-  bagParaDesvincular = null;
-  g('desvinculaPreview').style.display = 'none';
-  g('btnDesvincular').style.display = 'none';
-  if(!val){ st.textContent=''; return; }
-  st.textContent = 'Buscando...';
-  epcDesvinculaTimer = setTimeout(async()=>{
-    const epc = val.trim().replace(/[\n\r]/g,'');
-    if(epc.length < 4) return;
-    if(!db){ flash('Firebase não conectado','err'); return; }
-
-    // Buscar bag com esse EPC
-    const snap = await db.collection('bags').where('epc','==',epc).get();
-    if(snap.empty){
-      st.innerHTML = '<span style="color:var(--vermelho)">Tag não encontrada no sistema</span>';
-      return;
-    }
-
-    const bagDoc = snap.docs[0];
-    const bag    = bagDoc.data();
-
-    if(bag.status === 'aguardando_tag'){
-      st.innerHTML = '<span style="color:var(--amarelo)">Esta tag ainda não foi vinculada a nenhum bag</span>';
-      return;
-    }
-
-    bagParaDesvincular = { id: bagDoc.id, ...bag };
-    st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag encontrada</span>';
-
-    // Mostrar preview
-    const stTxt = {em_estoque:'Em estoque', expedido:'Expedido', perdido:'Perdido'}[bag.status]||bag.status;
-    const stCls = {em_estoque:'tag-verde', expedido:'tag-amarelo', perdido:'tag-vermelho'}[bag.status]||'tag-cinza';
-    g('desvinculaInfo').innerHTML = `
-      <div class="linha-item" style="border:none;padding:8px 0 0">
-        <div>
-          <span class="item-num">${bag.numero_bag}</span>
-          <span class="item-sub">${bag.cultivar_nome||'—'} · ${bag.lote||'—'}</span>
-          <span class="item-sub mono" style="color:var(--azul);font-size:12px">${epc}</span>
-        </div>
-        <span class="tag ${stCls}">${stTxt}</span>
-      </div>`;
-    g('desvinculaPreview').style.display = 'block';
-    g('btnDesvincular').style.display    = 'flex';
-  }, 500);
-};
 
 
 // ── LEITURA NFC ──
