@@ -469,29 +469,28 @@ function fecharDrawer() {
 }
 
 function onEpcInput(val) {
+  // Campo epcInput foi removido da tela de Vincular — função mantida para compatibilidade
   clearTimeout(epcTimer);
   const st = g('epcStatus');
-  // Esconde listas enquanto digita
-  g('secBagsPendentes').style.display = 'none';
-  g('secSemPendentes').style.display  = 'none';
-  if(!val){ st.textContent=''; return; }
-  st.textContent = 'Aguardando...';
+  const secPend = g('secBagsPendentes');
+  const secSem  = g('secSemPendentes');
+  if(secPend) secPend.style.display = 'none';
+  if(secSem)  secSem.style.display  = 'none';
+  if(!val){ if(st) st.textContent=''; return; }
+  if(st) st.textContent = 'Aguardando...';
   epcTimer = setTimeout(async () => {
     const epc = val.trim().replace(/[\n\r]/g,'');
     if(epc.length < 4) return;
-    g('epcInput').value = epc;
-
-    if(!db){ st.textContent='Firebase não conectado'; return; }
-
-    // Verificar se tag já está vinculada a algum bag
+    const inpEl = g('epcInput');
+    if(inpEl) inpEl.value = epc;
+    if(!db){ if(st) st.textContent='Firebase não conectado'; return; }
     const snapEpc = await db.collection('bags').where('epc','==',epc).get();
     if(!snapEpc.empty){
       const bagExiste = snapEpc.docs[0].data();
-      st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
+      if(st) st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
       return;
     }
-
-    st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag livre — selecione o bag abaixo</span>';
+    if(st) st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag livre — selecione o bag abaixo</span>';
     await carregarBagsPendentes(epc);
   }, 400);
 };
@@ -514,7 +513,7 @@ async function carregarBagsPendentes(epc) {
 
   const snap = await db.collection('bags')
     .where('status','==','aguardando_tag')
-    .orderBy('numero_bag').get();
+    .get();
 
   if(snap.empty){
     g('secBagsPendentes').style.display = 'none';
@@ -529,6 +528,11 @@ async function carregarBagsPendentes(epc) {
     const lote = b.lote || b.numero_bag?.split('-')[0] || '—';
     if(!lotesMap[lote]) lotesMap[lote] = { lote, cultivar: b.cultivar_nome||'—', bags: [] };
     lotesMap[lote].bags.push(b);
+  });
+
+  // Ordenar bags dentro de cada lote no cliente
+  Object.values(lotesMap).forEach(lt => {
+    lt.bags.sort((a,b) => (a.numero_bag||'').localeCompare(b.numero_bag||''));
   });
 
   const html = Object.values(lotesMap).map(lt => `
@@ -560,22 +564,26 @@ function onEpcCarga(val) {
   },400);
 };
 function clearField(id) {
-  g(id).value='';
-  if(id==='epcInput') g('epcStatus').textContent='';
-  g(id).focus();
+  const el = g(id);
+  if(!el) return;
+  el.value='';
+  if(id==='epcInput'){ const st=g('epcStatus'); if(st) st.textContent=''; }
+  el.focus();
 };
 
 async function vincularBagAo(bagId, numeroBag) {
-  // Buscar dados completos do bag para mostrar no painel de confirmação
   if(!db) return;
-  const snap = await db.collection('bags').doc(bagId).get();
-  if(!snap.exists){ flash('Bag não encontrado','err'); return; }
-  const bag = { id: bagId, ...snap.data() };
-  mostrarPainelConfirmacaoNFC(bag);
+  try {
+    const snap = await db.collection('bags').doc(bagId).get();
+    if(!snap.exists){ flash('Bag não encontrado','err'); return; }
+    const bag = { id: bagId, ...snap.data() };
+    mostrarPainelConfirmacaoNFC(bag);
+  } catch(e) {
+    flash('Erro ao abrir bag: ' + e.message,'err');
+  }
 }
 
 async function vincularBag() {
-  // Mantido para compatibilidade, não é mais chamado pelo HTML novo
   flash('Use a lista abaixo para selecionar o bag', 'warn');
 }
 
@@ -584,10 +592,10 @@ function limparVincular() {
   if(inp) inp.value = '';
   const st = g('epcStatus');
   if(st) st.textContent = '';
-  g('secBagsPendentes').style.display = 'none';
-  g('secSemPendentes').style.display  = 'none';
-  const inp2 = g('epcInput');
-  if(inp2) inp2.focus();
+  const secPend = g('secBagsPendentes');
+  const secSem  = g('secSemPendentes');
+  if(secPend) secPend.style.display = 'none';
+  if(secSem)  secSem.style.display  = 'none';
 }
 
 
@@ -608,26 +616,26 @@ async function criarPedido() {
   if(!num){ flash('Informe o número da OC','err'); return; }
   if(!itensOC.length){ flash('Adicione pelo menos uma cultivar','err'); return; }
 
-  // Salvar como "aguardando" — não inicia conferência ainda
-  await addDoc(collection(db,'pedidos_carga'),{
-    numero_pedido:   num,
-    placa_veiculo:   g('placa').value.trim(),
-    motorista:       g('motorista').value.trim(),
-    itens_esperados: itensOC,
-    status:          'aguardando',
-    criado_em:       serverTimestamp(),
-  });
+  try {
+    await addDoc(collection(db,'pedidos_carga'),{
+      numero_pedido:   num,
+      placa_veiculo:   g('placa').value.trim(),
+      motorista:       g('motorista').value.trim(),
+      itens_esperados: itensOC,
+      status:          'aguardando',
+      criado_em:       serverTimestamp(),
+    });
 
-  flash('OC ' + num + ' criada — aguardando caminhão', 'ok');
-
-  // Limpar formulário
-  ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
-  itensOC = [];
-  renderItensOC();
-  _formNovaOCVisivel = false;
-  toggleFormNovaOC();
-
-  carregarOCsAguardando();
+    flash('OC ' + num + ' criada — aguardando caminhão', 'ok');
+    ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
+    itensOC = [];
+    renderItensOC();
+    _formNovaOCVisivel = false;
+    toggleFormNovaOC();
+    carregarOCsAguardando();
+  } catch(e) {
+    flash('Erro ao criar OC: ' + e.message, 'err');
+  }
 }
 
 async function carregarOCsAguardando() {
@@ -957,48 +965,52 @@ function renderDivs(){
 async function confirmarExpedicao() {
   if(!pedidoAtivo||!cargaLidos.length){ flash('Nenhum bag lido','err'); return; }
   const avisoOffline = !navigator.onLine
-    ? '\n\n⚠️ Você está OFFLINE. A expedição será salva no celular e enviada ao servidor quando a internet voltar.'
+    ? '\n\n⚠️ Você está OFFLINE. A expedição será salva e enviada quando a internet voltar.'
     : '';
   if(!confirm(`Confirmar expedição de ${cargaLidos.length} bag(s)?${avisoOffline}`)) return;
+
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
 
-  // Coletar dados dos bags expedidos para desvincular tags depois
-  const bagsExpedidos = [];
+  try {
+    const bagsExpedidos = [];
 
-  for(const b of cargaLidos){
-    const snap = await getDocs(query(collection(db,'bags'),where('epc','==',b.epc)));
-    if(snap.empty) continue;
-    const bagRef  = snap.docs[0].ref;
-    const bagData = snap.docs[0].data();
-    await updateDoc(bagRef,{status:'expedido',atualizado_em:serverTimestamp()});
-    await addDoc(collection(db,'movimentacoes'),{
-      bag_id:snap.docs[0].id, numero_bag:b.numero, tipo_evento:'saida_expedicao',
-      observacao:`Expedido — pedido ${pedidoAtivo.numero}`,
-      operador:op, dispositivo:dev, criado_em:serverTimestamp(),
+    for(const b of cargaLidos){
+      const snap = await getDocs(query(collection(db,'bags'),where('epc','==',b.epc)));
+      if(snap.empty) continue;
+      const bagRef  = snap.docs[0].ref;
+      const bagData = snap.docs[0].data();
+      await updateDoc(bagRef,{status:'expedido',atualizado_em:serverTimestamp()});
+      await addDoc(collection(db,'movimentacoes'),{
+        bag_id:snap.docs[0].id, numero_bag:b.numero, tipo_evento:'saida_expedicao',
+        observacao:`Expedido — pedido ${pedidoAtivo.numero}`,
+        operador:op, dispositivo:dev, criado_em:serverTimestamp(),
+      });
+      bagsExpedidos.push({
+        id: snap.docs[0].id,
+        numero_bag: b.numero,
+        epc: b.epc,
+        cultivar_nome: bagData.cultivar_nome||'—',
+        lote: bagData.lote||'—',
+      });
+    }
+
+    // Atualizar status da OC usando SDK compat (db.collection)
+    await db.collection('pedidos_carga').doc(pedidoAtivo.id).update({
+      status:       cargaDivs.length>0 ? 'divergencia' : 'expedido',
+      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
-    bagsExpedidos.push({
-      id: snap.docs[0].id,
-      numero_bag: b.numero,
-      epc: b.epc,
-      cultivar_nome: bagData.cultivar_nome||'—',
-      lote: bagData.lote||'—',
-    });
+
+    flash(cargaLidos.length+' bags expedidos!','ok');
+    window.cancelarPedido();
+
+    if(bagsExpedidos.length > 0){
+      setTimeout(()=> mostrarPainelDevolucao(bagsExpedidos), 800);
+    }
+  } catch(e) {
+    flash('Erro ao confirmar expedição: ' + e.message, 'err');
   }
-
-  await updateDoc(db.collection('pedidos_carga').doc(pedidoAtivo.id),{
-    status: cargaDivs.length>0?'divergencia':'expedido',
-    atualizado_em: serverTimestamp(),
-  });
-
-  flash(cargaLidos.length+' bags expedidos!','ok');
-  window.cancelarPedido();
-
-  // Mostrar painel de devolução de tags
-  if(bagsExpedidos.length > 0){
-    setTimeout(()=> mostrarPainelDevolucao(bagsExpedidos), 800);
-  }
-};
+}
 
 function mostrarPainelDevolucao(bags) {
   const painel = g('painelDevolucao');
@@ -1305,58 +1317,62 @@ async function criarLote() {
   const op  = localStorage.getItem('operador')    || 'Sistema';
   const dev = localStorage.getItem('dispositivo') || 'App';
 
-  // Verificar se lote já existe
-  const existe = await db.collection('bags').where('lote','==',numero).limit(1).get();
-  if(!existe.empty){ flash('Lote '+numero+' já cadastrado','warn'); return; }
-
   const btn = g('btn-criar-lote') || document.querySelector('[onclick="criarLote()"]');
-  if(btn){ btn.disabled=true; btn.textContent='Criando...'; }
 
-  const cultivarNome = getCultivarNome(cultivar);
-  const categoria    = g('ltCategoria').value;
-  const peneira      = g('ltPeneira').value.trim();
-  const peso         = parseFloat(g('ltPeso').value)||null;
-  const tratamento   = g('ltTratamento').value.trim();
-  const produtor     = g('ltProdutor').value.trim();
-  const localizacao = g('ltLocalizacao').value || '';
-  const locFinal    = localizacao === 'transito' ? '' : localizacao;
+  try {
+    // Verificar se lote já existe
+    const existe = await db.collection('bags').where('lote','==',numero).limit(1).get();
+    if(!existe.empty){ flash('Lote '+numero+' já cadastrado','warn'); return; }
 
-  // Calcular slot na posição (ordem de chegada)
-  let slotPosicao = null;
-  if(locFinal){
-    const snapPos = await db.collection('bags')
-      .where('localizacao_atual','==',locFinal)
-      .where('status','in',['em_estoque','aguardando_tag']).get();
-    const lotesJa = new Set(snapPos.docs.map(d=>d.data().lote||d.id));
-    slotPosicao = lotesJa.size; // 0=fundo, 1=meio, 2=frente...
+    if(btn){ btn.disabled=true; btn.textContent='Criando...'; }
+
+    const cultivarNome = getCultivarNome(cultivar);
+    const categoria    = g('ltCategoria').value;
+    const peneira      = g('ltPeneira').value.trim();
+    const peso         = parseFloat(g('ltPeso').value)||null;
+    const tratamento   = g('ltTratamento').value.trim();
+    const produtor     = g('ltProdutor').value.trim();
+    const localizacao  = g('ltLocalizacao').value || '';
+    const locFinal     = localizacao === 'transito' ? '' : localizacao;
+
+    let slotPosicao = null;
+    if(locFinal){
+      const snapPos = await db.collection('bags')
+        .where('localizacao_atual','==',locFinal)
+        .where('status','in',['em_estoque','aguardando_tag']).get();
+      const lotesJa = new Set(snapPos.docs.map(d=>d.data().lote||d.id));
+      slotPosicao = lotesJa.size;
+    }
+
+    for(let i=1; i<=qtd; i++){
+      const numeroBag = numero+'-'+String(i).padStart(2,'0');
+      await db.collection('bags').add({
+        epc:            null,
+        numero_bag:     numeroBag,
+        lote:           numero,
+        cultivar_id:    cultivar,
+        cultivar_nome:  cultivarNome,
+        categoria, peneira, peso_kg: peso,
+        tratamento, produtor,
+        localizacao_atual: locFinal,
+        slot_posicao:   slotPosicao,
+        entrada_posicao: locFinal ? firebase.firestore.FieldValue.serverTimestamp() : null,
+        status:         'aguardando_tag',
+        criado_em:      firebase.firestore.FieldValue.serverTimestamp(),
+        atualizado_em:  firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    flash('Lote '+numero+' criado — '+qtd+' bags!','ok');
+    ['ltNumero','ltQtd','ltPeneira','ltPeso','ltTratamento','ltProdutor','ltLocalizacao']
+      .forEach(id=>{ const el=g(id); if(el) el.value=''; });
+    g('ltCultivar').value='';
+    carregarLotes();
+  } catch(e) {
+    flash('Erro ao criar lote: ' + e.message, 'err');
+  } finally {
+    if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-clipboard-plus"></i> Criar lote e gerar bags'; }
   }
-
-  for(let i=1; i<=qtd; i++){
-    const numeroBag = numero+'-'+String(i).padStart(2,'0');
-    await db.collection('bags').add({
-      epc:            null,
-      numero_bag:     numeroBag,
-      lote:           numero,
-      cultivar_id:    cultivar,
-      cultivar_nome:  cultivarNome,
-      categoria,peneira,peso_kg:peso,
-      tratamento,produtor,
-      localizacao_atual: locFinal,
-      slot_posicao:   slotPosicao,
-      entrada_posicao: locFinal ? firebase.firestore.FieldValue.serverTimestamp() : null,
-      status:         'aguardando_tag',
-      criado_em:      firebase.firestore.FieldValue.serverTimestamp(),
-      atualizado_em:  firebase.firestore.FieldValue.serverTimestamp(),
-    });
-  }
-
-  flash('Lote '+numero+' criado — '+qtd+' bags!','ok');
-  // Limpar form
-  ['ltNumero','ltQtd','ltPeneira','ltPeso','ltTratamento','ltProdutor','ltLocalizacao']
-    .forEach(id=>g(id).value='');
-  g('ltCultivar').value='';
-  if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-clipboard-plus"></i> Criar lote e gerar bags'; }
-  carregarLotes();
 }
 
 async function carregarLotes() {
@@ -1528,13 +1544,13 @@ async function carregarExpedicoesDo(lote, bags) {
   // Buscar movimentações de expedição para os bags deste lote
   const movSnap = await db.collection('movimentacoes')
     .where('tipo_evento','==','saida_expedicao')
-    .orderBy('criado_em','desc')
     .get();
 
-  // Filtrar apenas bags do lote
+  // Filtrar apenas bags do lote e ordenar no cliente
   const movs = movSnap.docs
     .map(d=>({id:d.id,...d.data()}))
-    .filter(m=>bagIds.includes(m.bag_id));
+    .filter(m=>bagIds.includes(m.bag_id))
+    .sort((a,b)=> (b.criado_em?.seconds||0) - (a.criado_em?.seconds||0));
 
   if(!movs.length){
     g('secExpedicoes').style.display='none';
@@ -2396,44 +2412,44 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
 
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
-
-  // Usar URL como identificador único da tag (já que iOS não expõe o UID)
   const epcGerado = 'URL-' + numeroBag;
 
-  // Verificar se bag ainda está aguardando (outro dispositivo pode ter vinculado)
-  const snap = await db.collection('bags').doc(bagId).get();
-  if (!snap.exists || snap.data().status !== 'aguardando_tag') {
-    flash('Este bag já foi vinculado por outro dispositivo', 'warn');
-    cancelarConfirmacaoNFC();
-    return;
-  }
-
-  await db.collection('bags').doc(bagId).update({
-    epc: epcGerado,
-    status: 'em_estoque',
-    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-
-  await db.collection('movimentacoes').add({
-    bag_id: bagId, numero_bag: numeroBag,
-    tipo_evento: 'vinculacao',
-    local_destino: snap.data().localizacao_atual || '',
-    observacao: `Tag NFC vinculada via URL — ${epcGerado}`,
-    operador: op, dispositivo: dev,
-    criado_em: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-
-  flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
-  cancelarConfirmacaoNFC();
-
-  // Verificar se lote está completo
-  if (lote) {
-    const snapPend = await db.collection('bags')
-      .where('lote','==', lote)
-      .where('status','==','aguardando_tag').get();
-    if (snapPend.empty) {
-      flash('✅ Lote ' + lote + ' completo — todos os bags vinculados!', 'ok');
+  try {
+    const snap = await db.collection('bags').doc(bagId).get();
+    if (!snap.exists || snap.data().status !== 'aguardando_tag') {
+      flash('Este bag já foi vinculado por outro dispositivo', 'warn');
+      cancelarConfirmacaoNFC();
+      return;
     }
+
+    await db.collection('bags').doc(bagId).update({
+      epc: epcGerado,
+      status: 'em_estoque',
+      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await db.collection('movimentacoes').add({
+      bag_id: bagId, numero_bag: numeroBag,
+      tipo_evento: 'vinculacao',
+      local_destino: snap.data().localizacao_atual || '',
+      observacao: `Tag NFC vinculada via URL — ${epcGerado}`,
+      operador: op, dispositivo: dev,
+      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
+    flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
+    cancelarConfirmacaoNFC();
+
+    if (lote) {
+      const snapPend = await db.collection('bags')
+        .where('lote','==', lote)
+        .where('status','==','aguardando_tag').get();
+      if (snapPend.empty) {
+        flash('✅ Lote ' + lote + ' completo!', 'ok');
+      }
+    }
+  } catch(e) {
+    flash('Erro ao vincular: ' + e.message, 'err');
   }
 }
 
@@ -2449,11 +2465,8 @@ let nfcAtivo = false;
 let nfcReader = null;
 
 async function lerNFC() {
-  // Verifica suporte
   if (!('NDEFReader' in window)) {
-    // iPhone ou browser sem suporte — mostra instruções
-    g('nfcDica').style.display = 'block';
-    flash('NFC não suportado neste browser — veja as instruções abaixo','warn');
+    flash('NFC não suportado neste browser — use o iPhone com NFC Tools ou deep link','warn');
     return;
   }
   if (nfcAtivo) {
@@ -2464,15 +2477,17 @@ async function lerNFC() {
     nfcReader = new NDEFReader();
     await nfcReader.scan();
     nfcAtivo = true;
+    // Atualizar botão se existir
     const btn = g('btnNFC');
-    btn.innerHTML = '<i class="ti ti-nfc"></i> Aguardando tag... (toque para parar)';
-    btn.style.background = 'var(--verde)';
-    btn.style.color = '#0b1120';
-    g('epcStatus').innerHTML = '<span style="color:var(--verde)">📡 Aproxime a tag NFC do celular...</span>';
+    if(btn){
+      btn.innerHTML = '<i class="ti ti-nfc"></i> Aguardando tag... (toque para parar)';
+      btn.style.background = 'var(--verde)';
+      btn.style.color = '#0b1120';
+    }
+    flash('📡 Aproxime a tag NFC do celular...', 'ok');
 
     nfcReader.addEventListener('reading', ({ message, serialNumber }) => {
       let epc = '';
-      // Tenta ler NDEF records
       for (const record of message.records) {
         if (record.recordType === 'text') {
           const decoder = new TextDecoder(record.encoding || 'utf-8');
@@ -2482,22 +2497,31 @@ async function lerNFC() {
         if (record.recordType === 'url') {
           const decoder = new TextDecoder();
           const url = decoder.decode(record.data);
-          // Extrai código da URL se tiver
-          epc = url.split('/').pop().split('?')[0];
+          // Extrai parâmetro ?bag= da URL se existir
+          const bagParam = new URL(url.startsWith('http') ? url : 'https://x.com/' + url)
+            .searchParams.get('bag');
+          if(bagParam){ epc = bagParam; }
+          else { epc = url.split('/').pop().split('?')[0]; }
           break;
         }
       }
-      // Se não tiver NDEF, usa o serial number da tag
       if (!epc && serialNumber) {
         epc = serialNumber.toUpperCase().replace(/:/g,'');
       }
       if (epc) {
-        g('epcInput').value = epc;
-        g('epcStatus').innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag lida: ' + epc + '</span>';
-        pararNFC();
-        // Vibra para confirmar
         if (navigator.vibrate) navigator.vibrate(100);
-        g('numeroBag').focus();
+        pararNFC();
+        // Redirecionar para o fluxo correto
+        const campoCarga = g('epcCarga');
+        if (pedidoAtivo && campoCarga) {
+          // Expedição ativa — registrar bag na carga
+          campoCarga.value = '';
+          registrarBagNaCarga(epc);
+        } else {
+          // Vincular — carregar lista de bags pendentes
+          carregarBagsPendentes(epc);
+          flash('Tag lida: ' + epc, 'ok');
+        }
       }
     });
 
@@ -2509,10 +2533,9 @@ async function lerNFC() {
   } catch(e) {
     nfcAtivo = false;
     if (e.name === 'NotAllowedError') {
-      flash('Permissão NFC negada — ative nas configurações','err');
+      flash('Permissão NFC negada — ative nas configurações do Chrome','err');
     } else if (e.name === 'NotSupportedError') {
       flash('NFC não disponível neste dispositivo','err');
-      g('nfcDica').style.display = 'block';
     } else {
       flash('Erro NFC: ' + e.message,'err');
     }
