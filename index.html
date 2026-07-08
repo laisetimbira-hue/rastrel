@@ -2322,20 +2322,45 @@ function mostrarPainelConfirmacaoNFC(bag) {
   g('secBagsPendentes').style.display = 'none';
   g('secSemPendentes').style.display  = 'none';
 
+  const epcExibir = _epcLido || '—';
+
   g('painelConfirmacaoConteudo').innerHTML = `
-    <div style="background:var(--bg3);border-radius:var(--r-sm);padding:14px;margin-bottom:16px">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:var(--texto);margin-bottom:4px">
-        ${bag.numero_bag}
-      </div>
-      <div style="font-size:14px;color:var(--texto2);margin-bottom:2px">${bag.cultivar_nome||'—'}</div>
-      <div style="font-size:13px;color:var(--texto3)">${bag.categoria||'—'} · ${bag.produtor||'—'} · ${bag.localizacao_atual||'Sem posição'}</div>
+    <!-- UID da tag em destaque -->
+    <div style="background:var(--bg4);border:1px solid var(--azul);border-radius:var(--r-sm);
+      padding:10px 14px;margin-bottom:14px;text-align:center">
+      <div style="font-size:11px;color:var(--texto3);text-transform:uppercase;
+        letter-spacing:.8px;margin-bottom:4px">Tag lida</div>
+      <div class="mono" style="font-size:15px;color:var(--azul);font-weight:700;
+        word-break:break-all">${epcExibir}</div>
     </div>
-    <p style="font-size:14px;color:var(--texto2);margin-bottom:16px;line-height:1.6">
-      A tag NFC foi colada neste bag?
-    </p>
+
+    <!-- Dados do bag -->
+    <div style="background:var(--bg3);border-radius:var(--r-sm);padding:14px;margin-bottom:14px">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:24px;
+        font-weight:800;color:var(--texto);margin-bottom:4px">${bag.numero_bag}</div>
+      <div style="font-size:14px;color:var(--texto2);margin-bottom:2px">
+        ${bag.cultivar_nome||'—'}
+      </div>
+      <div style="font-size:13px;color:var(--texto3)">
+        ${bag.categoria||'—'} · ${bag.produtor||'—'} · ${bag.localizacao_atual||'Sem posição'}
+      </div>
+    </div>
+
+    <!-- Aviso de confirmação física -->
+    <div style="display:flex;gap:10px;align-items:flex-start;
+      background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.4);
+      border-radius:var(--r-sm);padding:12px;margin-bottom:16px">
+      <i class="ti ti-alert-triangle" style="color:var(--amarelo);font-size:20px;flex-shrink:0;margin-top:1px"></i>
+      <p style="font-size:13px;color:var(--texto2);line-height:1.5;margin:0">
+        Confirme que a etiqueta com o código acima está
+        <strong style="color:var(--texto)">fisicamente colada neste bag</strong>
+        antes de continuar.
+      </p>
+    </div>
+
     <button class="btn btn-verde" id="btnConfirmarVinculo"
       onclick="confirmarVinculacaoNFC('${bag.id}','${bag.numero_bag}','${bag.lote||''}')">
-      <i class="ti ti-check"></i> Sim — vincular esta tag ao bag
+      <i class="ti ti-check"></i> Confirmar — tag colada neste bag
     </button>`;
 
   const painel = g('painelConfirmacaoNFC');
@@ -2346,18 +2371,16 @@ function mostrarPainelConfirmacaoNFC(bag) {
 let _vinculandoEmProgresso = false;
 
 async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
-  // Proteção contra duplo toque
   if (_vinculandoEmProgresso) return;
   _vinculandoEmProgresso = true;
 
-  // Desabilitar botão imediatamente
   const btn = g('btnConfirmarVinculo');
-  if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Vinculando...'; }
+  if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Verificando...'; }
 
   if (!db) {
     flash('Firebase não conectado','err');
     _vinculandoEmProgresso = false;
-    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Sim — vincular esta tag ao bag'; }
+    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Confirmar vinculação'; }
     return;
   }
 
@@ -2367,8 +2390,24 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
 
   try {
     const snap = await db.collection('bags').doc(bagId).get();
-    if (!snap.exists || snap.data().status !== 'aguardando_tag') {
-      flash('Este bag já foi vinculado por outro dispositivo', 'warn');
+    if (!snap.exists) {
+      flash('Bag não encontrado','err');
+      cancelarConfirmacaoNFC();
+      return;
+    }
+
+    const bagData = snap.data();
+
+    // Bloqueio 1 — bag já tem status diferente de aguardando_tag
+    if (bagData.status !== 'aguardando_tag') {
+      flash('⚠️ ' + numeroBag + ' já foi vinculado — desvincule antes de trocar a tag', 'err');
+      cancelarConfirmacaoNFC();
+      return;
+    }
+
+    // Bloqueio 2 — bag já tem EPC gravado (proteção extra contra sobrescrita)
+    if (bagData.epc) {
+      flash('⚠️ ' + numeroBag + ' já tem a tag ' + bagData.epc + ' — desvincule primeiro', 'err');
       cancelarConfirmacaoNFC();
       return;
     }
@@ -2382,7 +2421,7 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
     await db.collection('movimentacoes').add({
       bag_id: bagId, numero_bag: numeroBag,
       tipo_evento: 'vinculacao',
-      local_destino: snap.data().localizacao_atual || '',
+      local_destino: bagData.localizacao_atual || '',
       observacao: `Tag NFC vinculada — ${epcFinal}`,
       operador: op, dispositivo: dev,
       criado_em: firebase.firestore.FieldValue.serverTimestamp(),
@@ -2391,6 +2430,8 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
     _epcLido = null;
     flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
     cancelarConfirmacaoNFC();
+
+    await carregarBagsPendentes('__manual__');
 
     if (lote) {
       const snapPend = await db.collection('bags')
@@ -2402,7 +2443,7 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
     }
   } catch(e) {
     flash('Erro ao vincular: ' + e.message, 'err');
-    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Sim — vincular esta tag ao bag'; }
+    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Confirmar vinculação'; }
   } finally {
     _vinculandoEmProgresso = false;
   }
