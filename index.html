@@ -583,10 +583,6 @@ async function vincularBagAo(bagId, numeroBag) {
   }
 }
 
-async function vincularBag() {
-  flash('Use a lista abaixo para selecionar o bag', 'warn');
-}
-
 function limparVincular() {
   const inp = g('epcInput');
   if(inp) inp.value = '';
@@ -1473,69 +1469,10 @@ async function abrirLote(numero) {
     g('secVinculados').style.display='none';
   }
 
-  // URLs para gravar nas tags — mostra só os bags ainda sem tag
-  const BASE_URL = window.location.origin + window.location.pathname;
-  if(pendente.length){
-    g('secURLs').style.display = 'block';
-    g('listaURLs').innerHTML = pendente.map(b=>{
-      const url = `${BASE_URL}?bag=${b.numero_bag}`;
-      return `<div class="url-item">
-        <div class="url-texto mono">${url}</div>
-        <button class="btn-copiar" onclick="copiarURL('${url}','btn-${b.id}')" id="btn-${b.id}">
-          <i class="ti ti-copy"></i>
-        </button>
-      </div>`;
-    }).join('');
-  } else {
-    g('secURLs').style.display = 'none';
-  }
-
   // Buscar expedições dos bags deste lote
   await carregarExpedicoesDo(numero, bags);
 }
 
-let _urlsParaCopiar = [];
-
-function copiarURL(url, btnId) {
-  navigator.clipboard.writeText(url).then(() => {
-    const btn = document.getElementById(btnId);
-    if(btn){
-      btn.innerHTML = '<i class="ti ti-check"></i>';
-      btn.style.color = 'var(--verde)';
-      setTimeout(() => {
-        btn.innerHTML = '<i class="ti ti-copy"></i>';
-        btn.style.color = '';
-      }, 2000);
-    }
-  }).catch(() => {
-    // Fallback para iOS que pode bloquear clipboard fora de interação
-    const el = document.createElement('textarea');
-    el.value = url;
-    document.body.appendChild(el);
-    el.select();
-    document.execCommand('copy');
-    document.body.removeChild(el);
-    flash('URL copiada!', 'ok');
-  });
-}
-
-function copiarTodasURLs() {
-  const urls = [...document.querySelectorAll('.url-texto')]
-    .map(el => el.textContent.trim())
-    .join('\n');
-  if(!urls){ flash('Nenhuma URL para copiar','warn'); return; }
-  navigator.clipboard.writeText(urls).then(() => {
-    flash(`${urls.split('\n').length} URLs copiadas!`, 'ok');
-  }).catch(() => {
-    const el = document.createElement('textarea');
-    el.value = urls;
-    document.body.appendChild(el);
-    el.select();
-    document.execCommand('copy');
-    document.body.removeChild(el);
-    flash('URLs copiadas!', 'ok');
-  });
-}
 
 async function carregarExpedicoesDo(lote, bags) {
   const bagIds = bags.map(b=>b.id);
@@ -2410,9 +2347,10 @@ function mostrarPainelConfirmacaoNFC(bag) {
 async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
   if (!db) { flash('Firebase não conectado','err'); return; }
 
+  // Usar UID real lido pelo Android, ou fallback URL para deep link iOS
+  const epcFinal = _epcLido || ('URL-' + numeroBag);
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
-  const epcGerado = 'URL-' + numeroBag;
 
   try {
     const snap = await db.collection('bags').doc(bagId).get();
@@ -2423,7 +2361,7 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
     }
 
     await db.collection('bags').doc(bagId).update({
-      epc: epcGerado,
+      epc: epcFinal,
       status: 'em_estoque',
       atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -2432,11 +2370,12 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
       bag_id: bagId, numero_bag: numeroBag,
       tipo_evento: 'vinculacao',
       local_destino: snap.data().localizacao_atual || '',
-      observacao: `Tag NFC vinculada via URL — ${epcGerado}`,
+      observacao: `Tag NFC vinculada — ${epcFinal}`,
       operador: op, dispositivo: dev,
       criado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
 
+    _epcLido = null; // Limpar após vincular
     flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
     cancelarConfirmacaoNFC();
 
@@ -2456,99 +2395,134 @@ async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
 function cancelarConfirmacaoNFC() {
   const painel = g('painelConfirmacaoNFC');
   if (painel) painel.style.display = 'none';
-  // Recarregar lista de bags pendentes
-  carregarBagsPendentes('__manual__');
+  _epcLido = null;
+  // Esconder lista de bags pendentes também
+  const secPend = g('secBagsPendentes');
+  const secSem  = g('secSemPendentes');
+  if(secPend) secPend.style.display = 'none';
+  if(secSem)  secSem.style.display  = 'none';
+  // Resetar status NFC
+  const st = g('nfcStatus');
+  if(st) st.innerHTML = '';
 }
 
 // ── LEITURA NFC ──
 let nfcAtivo = false;
 let nfcReader = null;
+let _epcLido  = null;
+
+function _extrairEpc(message, serialNumber) {
+  for (const record of message.records) {
+    if (record.recordType === 'text') {
+      return new TextDecoder(record.encoding||'utf-8').decode(record.data).trim();
+    }
+    if (record.recordType === 'url') {
+      const url = new TextDecoder().decode(record.data);
+      try {
+        const bp = new URL(url.startsWith('http')?url:'https://x.com/'+url).searchParams.get('bag');
+        if(bp) return bp;
+      } catch(e) {}
+      return serialNumber?.toUpperCase().replace(/:/g,'') || url;
+    }
+  }
+  return serialNumber ? serialNumber.toUpperCase().replace(/:/g,'') : '';
+}
 
 async function lerNFC() {
   if (!('NDEFReader' in window)) {
-    flash('NFC não suportado neste browser — use o iPhone com NFC Tools ou deep link','warn');
+    const st = g('nfcStatus');
+    if(st) st.innerHTML = '<span style="color:var(--vermelho)">NFC não disponível — use o Chrome no Android</span>';
     return;
   }
-  if (nfcAtivo) {
-    pararNFC();
-    return;
-  }
+  if (nfcAtivo) { pararNFC(); return; }
+
+  const btn = g('btnNFC');
+  const st  = g('nfcStatus');
+
   try {
     nfcReader = new NDEFReader();
     await nfcReader.scan();
     nfcAtivo = true;
-    // Atualizar botão se existir
-    const btn = g('btnNFC');
-    if(btn){
-      btn.innerHTML = '<i class="ti ti-nfc"></i> Aguardando tag... (toque para parar)';
-      btn.style.background = 'var(--verde)';
-      btn.style.color = '#0b1120';
-    }
-    flash('📡 Aproxime a tag NFC do celular...', 'ok');
 
-    nfcReader.addEventListener('reading', ({ message, serialNumber }) => {
-      let epc = '';
-      for (const record of message.records) {
-        if (record.recordType === 'text') {
-          const decoder = new TextDecoder(record.encoding || 'utf-8');
-          epc = decoder.decode(record.data).trim();
-          break;
-        }
-        if (record.recordType === 'url') {
-          const decoder = new TextDecoder();
-          const url = decoder.decode(record.data);
-          // Extrai parâmetro ?bag= da URL se existir
-          const bagParam = new URL(url.startsWith('http') ? url : 'https://x.com/' + url)
-            .searchParams.get('bag');
-          if(bagParam){ epc = bagParam; }
-          else { epc = url.split('/').pop().split('?')[0]; }
-          break;
-        }
-      }
-      if (!epc && serialNumber) {
-        epc = serialNumber.toUpperCase().replace(/:/g,'');
-      }
-      if (epc) {
-        if (navigator.vibrate) navigator.vibrate(100);
-        pararNFC();
-        // Redirecionar para o fluxo correto
+    if(btn){ btn.classList.add('ativo'); btn.innerHTML = '<i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>Aguardando...'; }
+    if(st)  st.innerHTML = '<span style="color:var(--azul)">📡 Aproxime a tag NFC do celular</span>';
+
+    nfcReader.addEventListener('reading', async ({ message, serialNumber }) => {
+      const epc = _extrairEpc(message, serialNumber);
+      if (!epc) return;
+
+      if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+      pararNFC();
+
+      // Expedição ativa — registrar bag na carga direto
+      if (pedidoAtivo) {
         const campoCarga = g('epcCarga');
-        if (pedidoAtivo && campoCarga) {
-          // Expedição ativa — registrar bag na carga
-          campoCarga.value = '';
-          registrarBagNaCarga(epc);
-        } else {
-          // Vincular — carregar lista de bags pendentes
-          carregarBagsPendentes(epc);
-          flash('Tag lida: ' + epc, 'ok');
+        if(campoCarga) campoCarga.value = '';
+        registrarBagNaCarga(epc);
+        return;
+      }
+
+      _epcLido = epc;
+      if(st) st.innerHTML = `<span style="color:var(--verde)">✓ Tag lida: <span class="mono">${epc}</span></span>`;
+
+      // Verificar se já está vinculada
+      if(db){
+        const snapEpc = await db.collection('bags').where('epc','==',epc).get();
+        if(!snapEpc.empty){
+          const bagExiste = snapEpc.docs[0].data();
+          if(st) st.innerHTML = `<span style="color:var(--vermelho)">⚠️ Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
+          _epcLido = null;
+          return;
         }
       }
+
+      // Carregar lista de bags pendentes para o operador selecionar
+      await carregarBagsPendentes(epc);
     });
 
     nfcReader.addEventListener('readingerror', () => {
-      flash('Erro ao ler a tag — tente novamente','err');
+      if(st) st.innerHTML = '<span style="color:var(--vermelho)">Erro ao ler a tag — tente novamente</span>';
       pararNFC();
     });
 
   } catch(e) {
     nfcAtivo = false;
-    if (e.name === 'NotAllowedError') {
-      flash('Permissão NFC negada — ative nas configurações do Chrome','err');
-    } else if (e.name === 'NotSupportedError') {
-      flash('NFC não disponível neste dispositivo','err');
-    } else {
-      flash('Erro NFC: ' + e.message,'err');
-    }
+    const msg = e.name==='NotAllowedError' ? 'Permissão NFC negada — ative nas configurações do Chrome'
+              : e.name==='NotSupportedError' ? 'NFC não disponível neste dispositivo'
+              : 'Erro NFC: ' + e.message;
+    const st = g('nfcStatus');
+    if(st) st.innerHTML = `<span style="color:var(--vermelho)">${msg}</span>`;
   }
 }
 
 function pararNFC() {
   nfcAtivo = false;
   const btn = g('btnNFC');
-  if (btn) {
-    btn.innerHTML = '<i class="ti ti-nfc"></i> Ler tag NFC';
-    btn.style.background = '';
-    btn.style.color = '';
+  if(btn){
+    btn.classList.remove('ativo');
+    btn.innerHTML = '<i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>Ler tag NFC';
+  }
+}
+
+async function lerNFCParaDesvincular() {
+  if (!('NDEFReader' in window)) { flash('NFC não disponível','err'); return; }
+  const btn = g('btnNFCDesvincular');
+  const st  = g('epcDesvinculaStatus');
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-nfc"></i> Aguardando tag...'; }
+  if(st)  st.innerHTML = '📡 Aproxime a tag...';
+  try {
+    const reader = new NDEFReader();
+    await reader.scan();
+    reader.addEventListener('reading', ({ message, serialNumber }) => {
+      const epc = _extrairEpc(message, serialNumber);
+      if(!epc) return;
+      if(navigator.vibrate) navigator.vibrate(80);
+      if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-nfc"></i> Ler tag para desvincular'; }
+      onEpcDesvincular(epc);
+    });
+  } catch(e) {
+    if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-nfc"></i> Ler tag para desvincular'; }
+    if(st)  st.innerHTML = `<span style="color:var(--vermelho)">Erro: ${e.message}</span>`;
   }
 }
 
@@ -3063,6 +3037,33 @@ select option{background:var(--bg2)}
 }
 .btn-nfc i{font-size:1.375rem}
 .btn-nfc:active{opacity:.8;transform:scale(.98)}
+
+/* Botão NFC grande — tela de vincular */
+.btn-nfc-grande{
+  display:inline-flex;flex-direction:column;align-items:center;
+  justify-content:center;
+  width:180px;height:180px;
+  border-radius:50%;
+  border:3px solid var(--azul);
+  background:var(--bg3);
+  color:var(--azul);
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:18px;font-weight:700;letter-spacing:.5px;
+  cursor:pointer;
+  transition:all .2s;
+  -webkit-tap-highlight-color:transparent;
+  margin:0 auto;
+}
+.btn-nfc-grande:active{opacity:.7;transform:scale(.95)}
+.btn-nfc-grande.ativo{
+  background:var(--azul);color:#fff;
+  animation:pulsar 1.2s ease-in-out infinite;
+}
+@keyframes pulsar{
+  0%,100%{box-shadow:0 0 0 0 rgba(79,142,247,.4)}
+  50%{box-shadow:0 0 0 18px rgba(79,142,247,0)}
+}
+
 
 /* ── DICA iPHONE ── */
 .nfc-dica{
@@ -3800,18 +3801,6 @@ select option{background:var(--bg2)}
     <div id="listaPendentes"></div>
   </div>
 
-  <!-- URLs para gravar nas tags NFC -->
-  <div id="secURLs" class="secao" style="display:none">
-    <div class="secao-titulo"><i class="ti ti-nfc"></i> URLs para gravar nas tags</div>
-    <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
-      Abra o <strong>NFC Tools</strong> → <strong>Write → Add a record → URL</strong> → cole a URL abaixo → grave na tag do bag correspondente.
-    </p>
-    <button class="btn btn-cinza" onclick="copiarTodasURLs()" style="margin-bottom:14px">
-      <i class="ti ti-copy"></i> Copiar todas as URLs
-    </button>
-    <div id="listaURLs"></div>
-  </div>
-
   <!-- Bags vinculados -->
   <div id="secVinculados" class="secao" style="display:none">
     <div class="secao-titulo" style="color:var(--verde)"><i class="ti ti-checks"></i> Tags vinculadas</div>
@@ -3836,7 +3825,7 @@ select option{background:var(--bg2)}
 
 <main class="screen active" id="screen-vincular">
   <div class="pg-titulo">Vincular tag</div>
-  <div class="pg-sub">Selecione o bag e confirme a tag colada</div>
+  <div class="pg-sub">Leia a tag NFC e selecione o bag correspondente</div>
 
   <div id="banner" class="banner">
     <i class="ti ti-alert-triangle"></i>
@@ -3846,10 +3835,19 @@ select option{background:var(--bg2)}
     </div>
   </div>
 
-  <!-- Painel de confirmação NFC (deep link via tag) — oculto por padrão -->
+  <!-- Botão principal NFC -->
+  <div class="secao" style="text-align:center">
+    <button class="btn-nfc-grande" id="btnNFC" onclick="lerNFC()">
+      <i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>
+      Ler tag NFC
+    </button>
+    <div id="nfcStatus" style="margin-top:12px;font-size:14px;color:var(--texto2);min-height:20px"></div>
+  </div>
+
+  <!-- Painel de confirmação NFC — aparece após ler a tag -->
   <div id="painelConfirmacaoNFC" class="secao" style="display:none;border-color:rgba(79,142,247,.3)">
     <div class="secao-titulo" style="color:var(--azul)">
-      <i class="ti ti-nfc"></i> Tag lida — confirme o bag
+      <i class="ti ti-nfc"></i> Tag lida — selecione o bag
     </div>
     <div id="painelConfirmacaoConteudo"></div>
     <button class="btn btn-cinza" style="margin-top:8px" onclick="cancelarConfirmacaoNFC()">
@@ -3857,15 +3855,16 @@ select option{background:var(--bg2)}
     </button>
   </div>
 
-  <!-- Bags pendentes — carregados automaticamente ao abrir a tela -->
-  <div id="secBagsPendentes" class="secao">
-    <div class="secao-titulo"><i class="ti ti-list-check"></i> Bags aguardando tag</div>
-    <div id="listaBagsPendentes">
-      <p class="vazio">Carregando...</p>
-    </div>
+  <!-- Bags pendentes -->
+  <div id="secBagsPendentes" class="secao" style="display:none">
+    <div class="secao-titulo"><i class="ti ti-list-check"></i> Selecione o bag</div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:12px">
+      Qual bag você está colando esta tag agora?
+    </p>
+    <div id="listaBagsPendentes"></div>
   </div>
 
-  <!-- Mensagem quando não há bags pendentes -->
+  <!-- Sem bags pendentes -->
   <div id="secSemPendentes" style="display:none" class="secao">
     <div class="estado-vazio">
       <i class="ti ti-clipboard-x" style="font-size:40px;margin-bottom:12px;color:var(--texto3)"></i>
@@ -3877,11 +3876,7 @@ select option{background:var(--bg2)}
     </div>
   </div>
 
-  <button class="btn btn-cinza" onclick="carregarBagsPendentes('__manual__')">
-    <i class="ti ti-refresh"></i> Atualizar lista
-  </button>
-
-  <!-- Separador reutilizar tag -->
+  <!-- Separador -->
   <div style="display:flex;align-items:center;gap:10px;margin:20px 0 6px">
     <div style="flex:1;height:1px;background:var(--borda)"></div>
     <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">REUTILIZAR TAG</span>
@@ -3891,21 +3886,17 @@ select option{background:var(--bg2)}
   <div class="secao">
     <div class="secao-titulo"><i class="ti ti-unlink"></i> Desvincular tag</div>
     <p style="font-size:14px;color:var(--texto2);margin-bottom:12px;line-height:1.6">
-      Leia a tag que será reutilizada. O sistema registra a devolução e libera o UID para um novo bag — sem perder o histórico.
+      Leia a tag que será reutilizada. O sistema registra a devolução e libera o UID para um novo bag.
     </p>
-    <div class="epc-wrap">
-      <input class="epc-input" id="epcDesvincular" type="text"
-        placeholder="Cole o UID da tag aqui..."
-        autocomplete="off" autocorrect="off" spellcheck="false"
-        oninput="onEpcDesvincular(this.value)"/>
-      <button class="epc-limpar" onclick="clearField('epcDesvincular')">✕</button>
-    </div>
-    <div class="epc-status" id="epcDesvinculaStatus"></div>
+    <button class="btn btn-cinza" id="btnNFCDesvincular" onclick="lerNFCParaDesvincular()">
+      <i class="ti ti-nfc"></i> Ler tag para desvincular
+    </button>
+    <div class="epc-status" id="epcDesvinculaStatus" style="margin-top:8px"></div>
     <div id="desvinculaPreview" style="display:none" class="desvincular-preview">
       <div class="desvincular-preview-titulo">Tag vinculada a:</div>
       <div id="desvinculaInfo"></div>
     </div>
-    <button class="btn btn-verm" id="btnDesvincular" onclick="desvinculaTag()" style="display:none">
+    <button class="btn btn-verm" id="btnDesvincular" onclick="desvinculaTag()" style="display:none;margin-top:8px">
       <i class="ti ti-unlink"></i> Confirmar devolução da tag
     </button>
   </div>
