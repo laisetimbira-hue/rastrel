@@ -451,7 +451,27 @@ function goTab(name) {
   if(name==='lotes') carregarLotes();
   if(name==='mapa') carregarMapa();
   if(name==='vincular') carregarBagsPendentes('__manual__');
-  if(name==='expedicao') { carregarOCsAguardando(); carregarHistoricoExpedicoes(); }
+  if(name==='expedicao') {
+    carregarOCsAguardando();
+    carregarHistoricoExpedicoes();
+    // Se não há conferência ativa em memória, verificar no Firebase
+    if(!pedidoAtivo && db) {
+      db.collection('pedidos_carga').where('status','==','conferindo').limit(1).get()
+        .then(snap => {
+          if(!snap.empty) {
+            const oc = snap.docs[0].data();
+            pedidoAtivo = { id: snap.docs[0].id, numero: oc.numero_pedido, itens: oc.itens_esperados||[] };
+            itensOC = oc.itens_esperados || [];
+            localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
+            g('pedidoForm').style.display        = 'none';
+            g('conferenciaPainel').style.display = 'block';
+            g('pedidoInfo').textContent          = oc.numero_pedido + (oc.placa_veiculo ? ' · ' + oc.placa_veiculo : '');
+            atualizarKpis();
+            renderProgressoCultivares();
+          }
+        }).catch(()=>{});
+    }
+  }
   fecharDrawer();
   window.scrollTo(0,0);
 }
@@ -2623,6 +2643,11 @@ function carregarPreferencias() {
   if (fi !== null) {
     fonteIdx = parseInt(fi);
     aplicarFonte();
+  }
+  // Carregar OCs aguardando após Firebase conectar
+  // (garante que aparecem mesmo se o usuário não abriu a aba Expedição)
+  if (typeof carregarOCsAguardando === 'function') {
+    carregarOCsAguardando();
   }
 }
 
