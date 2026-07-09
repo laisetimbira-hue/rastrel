@@ -2511,14 +2511,6 @@ async function lerNFC() {
       if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
       pararNFC();
 
-      // Expedição ativa — registrar bag na carga direto
-      if (pedidoAtivo) {
-        const campoCarga = g('epcCarga');
-        if(campoCarga) campoCarga.value = '';
-        registrarBagNaCarga(epc);
-        return;
-      }
-
       _epcLido = epc;
       if(st) st.innerHTML = `<span style="color:var(--verde)">✓ Tag lida: <span class="mono">${epc}</span></span>`;
 
