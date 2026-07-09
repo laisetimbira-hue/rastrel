@@ -435,10 +435,6 @@ const TAB_NOMES = {
 };
 
 function goTab(name) {
-  // Parar qualquer NFC ativo ao trocar de aba — Android só permite uma instância
-  if(nfcAtivo) pararNFC();
-  if(nfcCargaAtivo) pararNFCCarga();
-
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.drawer-item').forEach(t=>t.classList.remove('active'));
   const navEl = g('nav-'+name);
