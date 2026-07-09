@@ -3887,26 +3887,29 @@ select option{background:var(--bg2)}
   </div>
 
   <!-- Separador -->
-  <div style="display:flex;align-items:center;gap:10px;margin:20px 0 6px">
+  <div style="display:flex;align-items:center;gap:10px;margin:20px 0 10px">
     <div style="flex:1;height:1px;background:var(--borda)"></div>
     <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">REUTILIZAR TAG</span>
     <div style="flex:1;height:1px;background:var(--borda)"></div>
   </div>
 
-  <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-unlink"></i> Desvincular tag</div>
-    <p style="font-size:14px;color:var(--texto2);margin-bottom:12px;line-height:1.6">
-      Leia a tag que será reutilizada. O sistema registra a devolução e libera o UID para um novo bag.
+  <div class="secao" style="border-color:rgba(248,113,113,.25)">
+    <div class="secao-titulo" style="color:var(--vermelho)">
+      <i class="ti ti-unlink"></i> Desvincular tag
+    </div>
+    <p style="font-size:14px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
+      Leia a tag que quer liberar. O sistema registra a devolução no histórico e o UID fica disponível para vincular a outro bag.
     </p>
-    <button class="btn btn-cinza" id="btnNFCDesvincular" onclick="lerNFCParaDesvincular()">
+    <button class="btn btn-cinza" id="btnNFCDesvincular" onclick="lerNFCParaDesvincular()"
+      style="border-color:var(--vermelho);color:var(--vermelho)">
       <i class="ti ti-nfc"></i> Ler tag para desvincular
     </button>
-    <div class="epc-status" id="epcDesvinculaStatus" style="margin-top:8px"></div>
+    <div class="epc-status" id="epcDesvinculaStatus" style="margin-top:10px"></div>
     <div id="desvinculaPreview" style="display:none" class="desvincular-preview">
       <div class="desvincular-preview-titulo">Tag vinculada a:</div>
       <div id="desvinculaInfo"></div>
     </div>
-    <button class="btn btn-verm" id="btnDesvincular" onclick="desvinculaTag()" style="display:none;margin-top:8px">
+    <button class="btn btn-verm" id="btnDesvincular" onclick="desvinculaTag()" style="display:none;margin-top:10px">
       <i class="ti ti-unlink"></i> Confirmar devolução da tag
     </button>
   </div>
