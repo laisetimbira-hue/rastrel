@@ -795,6 +795,9 @@ async function retormarConferencia(ocId) {
   g('pedidoForm').style.display        = 'none';
   g('conferenciaPainel').style.display = 'block';
   flash('Conferência retomada — ' + oc.numero_pedido, 'ok');
+
+  // Ativar NFC automaticamente
+  if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
 }
 
 async function iniciarConferencia(ocId) {
@@ -830,6 +833,9 @@ async function iniciarConferencia(ocId) {
   g('conferenciaPainel').style.display = 'block';
   g('epcCarga').focus();
   flash('Conferência iniciada — ' + oc.numero_pedido, 'ok');
+
+  // Ativar NFC automaticamente
+  if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
 }
 
 async function cancelarOC(ocId, numero) {
@@ -1187,8 +1193,7 @@ async function devolverTagRapido(bagId, epc, numeroBag) {
   }
 }
 function pausarConferencia() {
-  // Apenas esconde o painel — OC continua com status "conferindo" no Firebase
-  // O operador pode voltar depois e retomar de onde parou
+  pararNFCCarga();
   g('conferenciaPainel').style.display = 'none';
   g('pedidoForm').style.display        = 'block';
   flash('Conferência pausada — retome quando quiser na aba Expedição', 'ok');
@@ -1201,6 +1206,7 @@ function cancelarConferencia() {
 }
 
 function cancelarPedido() {
+  pararNFCCarga();
   pedidoAtivo=null; cargaLidos=[]; cargaDivs=[]; itensOC=[];
   localStorage.removeItem('expedicao_ativa');
   g('conferenciaPainel').style.display='none';
@@ -2594,9 +2600,68 @@ function cancelarConfirmacaoNFC() {
 }
 
 // ── LEITURA NFC ──
-let nfcAtivo = false;
-let nfcReader = null;
-let _epcLido  = null;
+let nfcCargaAtivo = false;
+let nfcCargaReader = null;
+
+async function lerNFCCarga() {
+  if (!('NDEFReader' in window)) {
+    const st = g('nfcStatusCarga');
+    if(st) st.innerHTML = '<span style="color:var(--vermelho)">NFC não disponível — use o Chrome no Android</span>';
+    return;
+  }
+  if (nfcCargaAtivo) { pararNFCCarga(); return; }
+
+  const btn = g('btnNFCCarga');
+  const st  = g('nfcStatusCarga');
+
+  try {
+    nfcCargaReader = new NDEFReader();
+    await nfcCargaReader.scan();
+    nfcCargaAtivo = true;
+
+    if(btn){ btn.classList.add('ativo'); btn.innerHTML = '<i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>Aguardando...'; }
+    if(st)  st.innerHTML = '<span style="color:var(--azul)">📡 Aproxime o bag do celular</span>';
+
+    nfcCargaReader.addEventListener('reading', async ({ message, serialNumber }) => {
+      const epc = _extrairEpc(message, serialNumber);
+      if (!epc) return;
+
+      if(navigator.vibrate) navigator.vibrate([80, 40, 80]);
+      pararNFCCarga();
+
+      if(st) st.innerHTML = `<span style="color:var(--verde)">✓ Tag lida: <span class="mono">${epc}</span></span>`;
+
+      await registrarBagNaCarga(epc);
+
+      // Reativar para o próximo bag automaticamente
+      setTimeout(() => { if(!nfcCargaAtivo) lerNFCCarga(); }, 800);
+    });
+
+    nfcCargaReader.addEventListener('readingerror', () => {
+      if(st) st.innerHTML = '<span style="color:var(--vermelho)">Erro ao ler — tente novamente</span>';
+      pararNFCCarga();
+    });
+
+  } catch(e) {
+    nfcCargaAtivo = false;
+    const msg = e.name === 'NotAllowedError' ? 'Permissão NFC negada'
+              : e.name === 'NotSupportedError' ? 'NFC não disponível neste dispositivo'
+              : 'Erro NFC: ' + e.message;
+    const st = g('nfcStatusCarga');
+    if(st) st.innerHTML = `<span style="color:var(--vermelho)">${msg}</span>`;
+  }
+}
+
+function pararNFCCarga() {
+  nfcCargaAtivo = false;
+  const btn = g('btnNFCCarga');
+  if(btn){
+    btn.classList.remove('ativo');
+    btn.innerHTML = '<i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>Aproxime o bag';
+  }
+}
+
+
 
 function _extrairEpc(message, serialNumber) {
   for (const record of message.records) {
@@ -4123,17 +4188,23 @@ select option{background:var(--bg2)}
       <div id="progressoCultivares"><p class="vazio">—</p></div>
     </div>
 
-    <div class="secao">
-      <div class="secao-titulo"><i class="ti ti-antenna"></i> Leitura dos bags</div>
-      <p style="font-size:13px;color:var(--texto2);margin-bottom:10px">
-        Bipe cada bag carregado no caminhão.
+    <div class="secao" style="text-align:center">
+      <div class="secao-titulo" style="text-align:left"><i class="ti ti-antenna"></i> Leitura dos bags</div>
+      <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;text-align:left">
+        Aproxime cada bag ao celular conforme carrega no caminhão.
       </p>
-      <div class="epc-wrap">
+      <button class="btn-nfc-grande" id="btnNFCCarga" onclick="lerNFCCarga()">
+        <i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>
+        Aproxime o bag
+      </button>
+      <div id="nfcStatusCarga" style="margin-top:12px;font-size:14px;color:var(--texto2);min-height:20px"></div>
+      <!-- Campo fallback para leitor externo ou digitação manual -->
+      <div style="margin-top:14px">
         <input class="epc-input" id="epcCarga" type="text"
-          placeholder="Aguardando leitor..."
+          placeholder="Ou cole o EPC manualmente..."
           autocomplete="off" autocorrect="off" spellcheck="false"
+          style="font-size:13px;opacity:.6"
           oninput="onEpcCarga(this.value)"/>
-        <button class="epc-limpar" onclick="clearField('epcCarga')">✕</button>
       </div>
     </div>
 
