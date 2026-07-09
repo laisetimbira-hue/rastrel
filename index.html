@@ -450,7 +450,13 @@ function goTab(name) {
   if(name==='dashboard') carregarDashboard();
   if(name==='lotes') carregarLotes();
   if(name==='mapa') carregarMapa();
-  if(name==='vincular') carregarBagsPendentes('__manual__');
+  if(name==='vincular') {
+    carregarBagsPendentes('__manual__');
+    // Ativar NFC automaticamente se o dispositivo suportar
+    if ('NDEFReader' in window && !nfcAtivo) {
+      setTimeout(() => lerNFC(), 300);
+    }
+  }
   if(name==='expedicao') {
     carregarOCsAguardando();
     carregarHistoricoExpedicoes();
@@ -592,14 +598,73 @@ function clearField(id) {
 };
 
 async function vincularBagAo(bagId, numeroBag) {
-  if(!db) return;
+  if (_vinculandoEmProgresso) return;
+  _vinculandoEmProgresso = true;
+
+  if(!db){ _vinculandoEmProgresso = false; return; }
+
+  const op  = localStorage.getItem('operador')    || 'Operador';
+  const dev = localStorage.getItem('dispositivo') || 'App';
+  const epcFinal = _epcLido || ('URL-' + numeroBag);
+
   try {
     const snap = await db.collection('bags').doc(bagId).get();
-    if(!snap.exists){ flash('Bag não encontrado','err'); return; }
-    const bag = { id: bagId, ...snap.data() };
-    mostrarPainelConfirmacaoNFC(bag);
+    if(!snap.exists){
+      flash('Bag não encontrado','err');
+      return;
+    }
+    const bagData = snap.data();
+
+    if(bagData.status !== 'aguardando_tag'){
+      flash('⚠️ ' + numeroBag + ' já foi vinculado','warn');
+      await carregarBagsPendentes('__manual__');
+      return;
+    }
+    if(bagData.epc){
+      flash('⚠️ ' + numeroBag + ' já tem tag — desvincule primeiro','err');
+      await carregarBagsPendentes('__manual__');
+      return;
+    }
+
+    await db.collection('bags').doc(bagId).update({
+      epc: epcFinal,
+      status: 'em_estoque',
+      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await db.collection('movimentacoes').add({
+      bag_id: bagId, numero_bag: numeroBag,
+      tipo_evento: 'vinculacao',
+      local_destino: bagData.localizacao_atual || '',
+      observacao: `Tag NFC vinculada — ${epcFinal}`,
+      operador: op, dispositivo: dev,
+      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
+    if(navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    _epcLido = null;
+    flash('✓ ' + numeroBag + ' — vinculado!', 'ok');
+
+    // Recarregar lista e reativar NFC para próxima tag
+    await carregarBagsPendentes('__manual__');
+
+    const lote = bagData.lote || '';
+    if(lote){
+      const snapPend = await db.collection('bags')
+        .where('lote','==',lote)
+        .where('status','==','aguardando_tag').get();
+      if(snapPend.empty){
+        flash('✅ Lote ' + lote + ' completo!', 'ok');
+      } else {
+        // Reativar NFC automaticamente para o próximo bag
+        setTimeout(() => { if(!nfcAtivo) lerNFC(); }, 500);
+      }
+    }
+
   } catch(e) {
-    flash('Erro ao abrir bag: ' + e.message,'err');
+    flash('Erro ao vincular: ' + e.message, 'err');
+  } finally {
+    _vinculandoEmProgresso = false;
   }
 }
 
@@ -2569,7 +2634,7 @@ function pararNFC() {
   const btn = g('btnNFC');
   if(btn){
     btn.classList.remove('ativo');
-    btn.innerHTML = '<i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>Ler tag NFC';
+    btn.innerHTML = '<i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>Aproxime a tag';
   }
 }
 
@@ -3852,7 +3917,7 @@ select option{background:var(--bg2)}
 
 <main class="screen active" id="screen-vincular">
   <div class="pg-titulo">Vincular tag</div>
-  <div class="pg-sub">Leia a tag NFC e selecione o bag correspondente</div>
+  <div class="pg-sub">Aproxime a tag — o leitor ativa automaticamente</div>
 
   <div id="banner" class="banner">
     <i class="ti ti-alert-triangle"></i>
@@ -3866,7 +3931,7 @@ select option{background:var(--bg2)}
   <div class="secao" style="text-align:center">
     <button class="btn-nfc-grande" id="btnNFC" onclick="lerNFC()">
       <i class="ti ti-nfc" style="font-size:48px;display:block;margin-bottom:8px"></i>
-      Ler tag NFC
+      Aproxime a tag
     </button>
     <div id="nfcStatus" style="margin-top:12px;font-size:14px;color:var(--texto2);min-height:20px"></div>
   </div>
