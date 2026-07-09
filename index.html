@@ -721,49 +721,80 @@ async function criarPedido() {
 
 async function carregarOCsAguardando() {
   if(!db) return;
-  const snap = await db.collection('pedidos_carga')
-    .where('status','==','aguardando')
-    .get();
+
+  // Buscar OCs aguardando E em conferência (pausada)
+  const snapAg = await db.collection('pedidos_carga').where('status','==','aguardando').get();
+  const snapConf = await db.collection('pedidos_carga').where('status','==','conferindo').get();
 
   const secao = g('secOCsAguardando');
   const lista  = g('listaOCsAguardando');
+  if(!secao || !lista) return;
 
-  if(snap.empty){
+  const todasOCs = [
+    ...snapConf.docs.map(d => ({ id: d.id, ...d.data(), _emConferencia: true })),
+    ...snapAg.docs.map(d => ({ id: d.id, ...d.data(), _emConferencia: false })),
+  ];
+
+  if(todasOCs.length === 0){
     secao.style.display = 'none';
-    // Mostrar formulário automaticamente se não há OCs
     if(!_formNovaOCVisivel){
       _formNovaOCVisivel = true;
-      g('formNovaOC').style.display = 'block';
-      g('btnNovaOC').innerHTML = '<i class="ti ti-x"></i> Cancelar';
+      const formOC = g('formNovaOC');
+      if(formOC) formOC.style.display = 'block';
+      const btnOC = g('btnNovaOC');
+      if(btnOC) btnOC.innerHTML = '<i class="ti ti-x"></i> Cancelar';
     }
     return;
   }
 
   secao.style.display = 'block';
-  lista.innerHTML = snap.docs.map(d => {
-    const oc = d.data();
-    const itensStr = (oc.itens_esperados||[]).map(i=>
-      `${i.cultivar} ${i.quantidade}bg`).join(' · ');
-    return `<div class="lote-card" style="margin-bottom:10px">
+  lista.innerHTML = todasOCs.map(oc => {
+    const itensStr = (oc.itens_esperados||[]).map(i=>`${i.cultivar} ${i.quantidade}bg`).join(' · ');
+    const emConf = oc._emConferencia;
+
+    return `<div class="lote-card" style="margin-bottom:10px;${emConf?'border-color:rgba(79,142,247,.4)':''}">
       <div class="lote-card-topo">
         <div>
-          <div class="lote-num">${oc.numero_pedido}</div>
+          <div class="lote-num">${oc.numero_pedido}
+            ${emConf ? '<span class="tag tag-azul" style="margin-left:6px;font-size:11px">Em conferência</span>' : ''}
+          </div>
           <div class="lote-sub">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
           <div class="lote-sub" style="color:var(--texto3);margin-top:2px">${itensStr}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-          <button class="btn btn-verde" style="padding:8px 14px;font-size:14px"
-            onclick="iniciarConferencia('${d.id}')">
-            <i class="ti ti-truck"></i> Iniciar
+          <button class="btn ${emConf?'btn-azul':'btn-verde'}" style="padding:8px 14px;font-size:14px"
+            onclick="${emConf ? `retormarConferencia('${oc.id}')` : `iniciarConferencia('${oc.id}')`}">
+            <i class="ti ti-${emConf?'player-play':'truck'}"></i> ${emConf ? 'Retomar' : 'Iniciar'}
           </button>
-          <button class="btn btn-verm" style="padding:6px 14px;font-size:13px"
-            onclick="cancelarOC('${d.id}','${oc.numero_pedido}')">
+          ${!emConf ? `<button class="btn btn-verm" style="padding:6px 14px;font-size:13px"
+            onclick="cancelarOC('${oc.id}','${oc.numero_pedido}')">
             <i class="ti ti-trash"></i> Cancelar
-          </button>
+          </button>` : ''}
         </div>
       </div>
     </div>`;
   }).join('');
+}
+
+async function retormarConferencia(ocId) {
+  if(!db) return;
+  const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
+  if(!ocDoc.exists) return;
+  const oc = ocDoc.data();
+
+  pedidoAtivo = { id: ocId, numero: oc.numero_pedido, itens: oc.itens_esperados||[] };
+  itensOC = oc.itens_esperados || [];
+  localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
+  cargaLidos=[]; cargaDivs=[];
+
+  atualizarKpis();
+  renderLidos();
+  renderProgressoCultivares();
+
+  g('pedidoInfo').textContent = oc.numero_pedido + (oc.placa_veiculo ? ' · ' + oc.placa_veiculo : '');
+  g('pedidoForm').style.display        = 'none';
+  g('conferenciaPainel').style.display = 'block';
+  flash('Conferência retomada — ' + oc.numero_pedido, 'ok');
 }
 
 async function iniciarConferencia(ocId) {
@@ -1155,6 +1186,20 @@ async function devolverTagRapido(bagId, epc, numeroBag) {
     }, 1000);
   }
 }
+function pausarConferencia() {
+  // Apenas esconde o painel — OC continua com status "conferindo" no Firebase
+  // O operador pode voltar depois e retomar de onde parou
+  g('conferenciaPainel').style.display = 'none';
+  g('pedidoForm').style.display        = 'block';
+  flash('Conferência pausada — retome quando quiser na aba Expedição', 'ok');
+  carregarOCsAguardando();
+}
+
+function cancelarConferencia() {
+  if(!confirm('Cancelar a conferência?\n\nOs bags já lidos NÃO serão expedidos e a OC será descartada. Esta ação não pode ser desfeita.')) return;
+  cancelarPedido();
+}
+
 function cancelarPedido() {
   pedidoAtivo=null; cargaLidos=[]; cargaDivs=[]; itensOC=[];
   localStorage.removeItem('expedicao_ativa');
@@ -4122,8 +4167,11 @@ select option{background:var(--bg2)}
     <button class="btn btn-verde" onclick="confirmarExpedicao()">
       <i class="ti ti-check"></i> Confirmar expedição
     </button>
-    <button class="btn btn-cinza" onclick="cancelarPedido()">
-      <i class="ti ti-x"></i> Cancelar conferência
+    <button class="btn btn-cinza" onclick="pausarConferencia()">
+      <i class="ti ti-player-pause"></i> Pausar — continuar depois
+    </button>
+    <button class="btn btn-verm" onclick="cancelarConferencia()" style="margin-top:4px">
+      <i class="ti ti-x"></i> Cancelar e descartar conferência
     </button>
   </div>
 
