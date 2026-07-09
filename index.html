@@ -435,6 +435,10 @@ const TAB_NOMES = {
 };
 
 function goTab(name) {
+  // Parar qualquer NFC ativo ao trocar de aba — Android só permite uma instância
+  if(nfcAtivo) pararNFC();
+  if(nfcCargaAtivo) pararNFCCarga();
+
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.drawer-item').forEach(t=>t.classList.remove('active'));
   const navEl = g('nav-'+name);
@@ -463,10 +467,15 @@ function goTab(name) {
     }
   }
   if(name==='expedicao') {
+    // Parar NFC de vincular — Android só permite uma instância ativa por vez
+    if(nfcAtivo) pararNFC();
     carregarOCsAguardando();
     carregarHistoricoExpedicoes();
-    // Se não há conferência ativa em memória, verificar no Firebase
-    if(!pedidoAtivo && db) {
+    // Se há conferência ativa, ativar NFC da carga automaticamente
+    if(pedidoAtivo) {
+      if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 400);
+    } else if(db) {
+      // Verificar no Firebase se existe OC em conferência
       db.collection('pedidos_carga').where('status','==','conferindo').limit(1).get()
         .then(snap => {
           if(!snap.empty) {
@@ -479,6 +488,7 @@ function goTab(name) {
             g('pedidoInfo').textContent          = oc.numero_pedido + (oc.placa_veiculo ? ' · ' + oc.placa_veiculo : '');
             atualizarKpis();
             renderProgressoCultivares();
+            if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 500);
           }
         }).catch(()=>{});
     }
