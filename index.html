@@ -1165,7 +1165,7 @@ async function confirmarExpedicao() {
 
     flash(cargaLidos.length + ' bags expedidos!', 'ok');
     window.cancelarPedido();
-    carregarMapa();
+    carregarMapa(true); // forçar servidor para remover bags expedidos do mapa
 
     if(bagsExpedidos.length > 0){
       setTimeout(() => mostrarPainelDevolucao(bagsExpedidos), 800);
@@ -1601,6 +1601,7 @@ async function abrirLote(numero) {
   if(!db) return;
   loteAtivo = numero;
   goTab('lote-detalhe');
+  fecharEdicaoLote(); // garantir que formulário de edição começa fechado
 
   const snap = await db.collection('bags').where('lote','==',numero).get();
   const bags  = snap.docs.map(d=>({id:d.id,...d.data()}))
@@ -1654,6 +1655,69 @@ async function abrirLote(numero) {
   await carregarExpedicoesDo(numero, bags);
 }
 
+
+function abrirEdicaoLote() {
+  if(!loteAtivo || !db) return;
+  // Preencher formulário com dados atuais do lote
+  db.collection('bags').where('lote','==',loteAtivo).limit(1).get().then(snap => {
+    if(snap.empty) return;
+    const b = snap.docs[0].data();
+    g('editCultivar').value   = b.cultivar_nome || '';
+    g('editCategoria').value  = b.categoria     || 'C1';
+    g('editPeneira').value    = b.peneira        || '';
+    g('editTratamento').value = b.tratamento     || '';
+    g('editPeso').value       = b.peso_kg        || '';
+    g('editProdutor').value   = b.produtor       || '';
+  });
+  g('formEditarLote').style.display = 'block';
+  g('formEditarLote').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function fecharEdicaoLote() {
+  const form = g('formEditarLote');
+  if(form) form.style.display = 'none';
+}
+
+async function salvarEdicaoLote() {
+  if(!loteAtivo || !db) return;
+  const cultivar   = g('editCultivar').value.trim();
+  const categoria  = g('editCategoria').value;
+  const peneira    = g('editPeneira').value.trim();
+  const tratamento = g('editTratamento').value.trim();
+  const peso       = parseFloat(g('editPeso').value) || null;
+  const produtor   = g('editProdutor').value.trim();
+
+  if(!cultivar){ flash('Informe a cultivar','err'); return; }
+
+  const btn = document.querySelector('[onclick="salvarEdicaoLote()"]');
+  if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Salvando...'; }
+
+  try {
+    const snap = await db.collection('bags').where('lote','==',loteAtivo).get();
+    const batch = db.batch();
+    snap.docs.forEach(doc => {
+      batch.update(doc.ref, {
+        cultivar_nome: cultivar,
+        categoria,
+        peneira,
+        tratamento,
+        peso_kg:       peso,
+        produtor,
+        atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+    await batch.commit();
+
+    flash('Lote ' + loteAtivo + ' atualizado — ' + snap.size + ' bags editados', 'ok');
+    fecharEdicaoLote();
+    // Recarregar detalhe do lote para refletir as alterações
+    await abrirLote(loteAtivo);
+  } catch(e) {
+    flash('Erro ao salvar: ' + e.message, 'err');
+  } finally {
+    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Salvar alterações'; }
+  }
+}
 
 async function carregarExpedicoesDo(lote, bags) {
   const bagIds = bags.map(b=>b.id);
@@ -1787,18 +1851,16 @@ function capacidadeDaPosicao(pos) {
   return CIMA.includes(pos) ? CAPACIDADE_POSICAO_A : CAPACIDADE_POSICAO;
 }
 
-async function carregarMapa() {
-  // O grid das 21 posições é sempre desenhado primeiro, independente do
-  // banco de dados responder ou não — assim a tela nunca fica em branco.
+async function carregarMapa(forcarServidor=false) {
   renderGrade('gradeCima',  CIMA,  {}, CAPACIDADE_POSICAO_A, LINHAS_POSICAO_A);
   renderGrade('gradeBaixo', BAIXO, {});
 
   if(!db) return;
 
   try {
-    // Offline: pede direto do cache para não esperar timeout de rede.
-    // Online: deixa o SDK decidir (tenta servidor, cai pra cache se falhar).
-    const opcoes = !navigator.onLine ? { source: 'cache' } : {};
+    // Após expedição, forçar busca no servidor para refletir bags expedidos
+    const opcoes = forcarServidor ? { source: 'server' }
+                 : !navigator.onLine ? { source: 'cache' } : {};
 
     const snap = await db.collection('bags')
       .where('status','in',['em_estoque','aguardando_tag'])
@@ -1806,25 +1868,19 @@ async function carregarMapa() {
 
     const bags = snap.docs.map(d=>({id:d.id,...d.data()}));
 
-    // Agrupar por localização
     const porPosicao = {};
     for(const b of bags){
-      const loc = (b.localizacao_atual||'').toUpperCase().replace(/ /g,'').replace(/	/g,'');
+      const loc = (b.localizacao_atual||'').toUpperCase().replace(/ /g,'').replace(/\t/g,'');
       if(!loc) continue;
       if(!porPosicao[loc]) porPosicao[loc] = [];
       porPosicao[loc].push(b);
     }
 
-    // Redesenha agora com os dados reais, por cima do grid vazio inicial.
     renderGrade('gradeCima',  CIMA,  porPosicao, CAPACIDADE_POSICAO_A, LINHAS_POSICAO_A);
     renderGrade('gradeBaixo', BAIXO, porPosicao);
 
-    if (!navigator.onLine) {
-      flash('Mostrando última versão salva do mapa (offline)', 'warn');
-    }
+    if (!navigator.onLine) flash('Mostrando última versão salva do mapa (offline)', 'warn');
   } catch(e) {
-    // O grid já está desenhado (vazio) — aqui só avisa que os dados de
-    // ocupação não puderam ser carregados, sem deixar a tela em branco.
     console.error('Erro ao carregar dados do mapa:', e);
     flash('Mapa exibido, mas sem dados de ocupação — ' + (e.message || 'erro desconhecido'), 'warn');
   }
@@ -4032,8 +4088,55 @@ select option{background:var(--bg2)}
       <i class="ti ti-arrow-left"></i>
     </button>
     <div class="pg-titulo" id="detalheNumero">—</div>
+    <button id="btnEditarLote" onclick="abrirEdicaoLote()" style="background:none;border:1px solid var(--borda);border-radius:8px;color:var(--texto2);cursor:pointer;font-size:13px;padding:6px 12px;margin-left:auto;-webkit-tap-highlight-color:transparent">
+      <i class="ti ti-edit"></i> Editar
+    </button>
   </div>
   <div class="pg-sub" id="detalheInfo">—</div>
+
+  <!-- Formulário de edição — oculto por padrão -->
+  <div id="formEditarLote" style="display:none" class="secao">
+    <div class="secao-titulo" style="color:var(--azul)"><i class="ti ti-edit"></i> Editar lote</div>
+    <div class="campo">
+      <label>Cultivar</label>
+      <input id="editCultivar" type="text" list="listaCultivares" placeholder="Ex: Zeus"/>
+    </div>
+    <div class="campo-linha">
+      <div>
+        <label>Categoria</label>
+        <select id="editCategoria">
+          <option value="C1">C1</option>
+          <option value="C2">C2</option>
+          <option value="S1">S1</option>
+          <option value="S2">S2</option>
+        </select>
+      </div>
+      <div>
+        <label>Peneira</label>
+        <input id="editPeneira" type="text" placeholder="Ex: Redonda 5,5"/>
+      </div>
+    </div>
+    <div class="campo-linha">
+      <div>
+        <label>Tratamento</label>
+        <input id="editTratamento" type="text" placeholder="Ex: Standak Top"/>
+      </div>
+      <div>
+        <label>Peso (kg)</label>
+        <input id="editPeso" type="number" placeholder="40" step="0.1"/>
+      </div>
+    </div>
+    <div class="campo">
+      <label>Produtor</label>
+      <input id="editProdutor" type="text" placeholder="Nome do produtor"/>
+    </div>
+    <button class="btn btn-azul" onclick="salvarEdicaoLote()">
+      <i class="ti ti-check"></i> Salvar alterações
+    </button>
+    <button class="btn btn-cinza" onclick="fecharEdicaoLote()" style="margin-top:8px">
+      Cancelar
+    </button>
+  </div>
 
   <!-- KPIs do lote -->
   <div class="kpi-row" style="grid-template-columns:repeat(3,1fr)">
