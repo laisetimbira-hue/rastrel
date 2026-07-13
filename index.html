@@ -1393,8 +1393,10 @@ async function buscarBag() {
     return;
   }
   const bagDoc=snap.docs[0], bag=bagDoc.data();
-  const movSnap=await getDocs(query(collection(db,'movimentacoes'),
-    where('bag_id','==',bagDoc.id),orderBy('criado_em','desc'),limit(8)));
+  const movSnapRaw=await getDocs(query(collection(db,'movimentacoes'),
+    where('bag_id','==',bagDoc.id),limit(20)));
+  const movSnap = { docs: movSnapRaw.docs.sort((a,b)=>
+    (b.data().criado_em?.seconds||0)-(a.data().criado_em?.seconds||0)).slice(0,8) };
   const stCls={em_estoque:'tag-verde',expedido:'tag-amarelo',perdido:'tag-vermelho'};
   const stTxt={em_estoque:'Em estoque',expedido:'Expedido',perdido:'Perdido'};
   el.innerHTML=`
@@ -1438,46 +1440,112 @@ function dr(k,v){ return `<div class="dr"><span class="dr-k">${k}</span><span cl
 async function carregarDashboard() {
   if(!db) return;
   try {
-    g('kTotal').textContent='...';
-    g('kEstoque').textContent='...';
-    g('kExpedido').textContent='...';
+    // Indicadores de loading
+    ['kTotal','kEstoque','kExpedido','kLotes','kSemTag','kPosicoes'].forEach(id => {
+      const el = g(id); if(el) el.textContent = '…';
+    });
 
-    const snap=await getDocs(collection(db,'bags'));
-    const bags=snap.docs.map(d=>d.data());
-    g('kTotal').textContent=bags.length;
-    g('kEstoque').textContent=bags.filter(b=>b.status==='em_estoque').length;
-    g('kExpedido').textContent=bags.filter(b=>b.status==='expedido').length;
-    const movSnap=await getDocs(query(collection(db,'movimentacoes'),orderBy('criado_em','desc'),limit(20)));
-    g('movList').innerHTML=movSnap.empty?'<p class="vazio">Nenhuma movimentação ainda.</p>':
-      movSnap.docs.map(d=>{const m=d.data(); return `
-        <div class="tl-item">
-          <div class="tl-dot" style="background:${EV_COR[m.tipo_evento]||'#475569'}"></div>
-          <div class="tl-corpo">
-            <div class="tl-evento">${m.numero_bag||'—'} — ${EV_LABEL[m.tipo_evento]||m.tipo_evento}</div>
-            <div class="tl-meta">${fmtData(m.criado_em)} · ${m.operador||'—'}</div>
+    const snap = await db.collection('bags').get();
+    const bags  = snap.docs.map(d => d.data());
+
+    const emEstoque    = bags.filter(b => b.status === 'em_estoque');
+    const expedidos    = bags.filter(b => b.status === 'expedido');
+    const semTag       = bags.filter(b => b.status === 'aguardando_tag');
+    const lotesAtivos  = new Set(emEstoque.map(b => b.lote)).size;
+    const posicoesUsadas = new Set(emEstoque.map(b => b.localizacao_atual).filter(Boolean)).size;
+
+    g('kTotal').textContent    = bags.length;
+    g('kEstoque').textContent  = emEstoque.length;
+    g('kExpedido').textContent = expedidos.length;
+    g('kLotes').textContent    = lotesAtivos;
+    g('kSemTag').textContent   = semTag.length;
+    g('kPosicoes').textContent = posicoesUsadas;
+
+    // ── Por cultivar ──
+    const porCultivar = {};
+    emEstoque.forEach(b => {
+      const c = b.cultivar_nome || '—';
+      porCultivar[c] = (porCultivar[c] || 0) + 1;
+    });
+    const maxCult = Math.max(...Object.values(porCultivar), 1);
+    const cultivarHTML = Object.entries(porCultivar)
+      .sort((a,b) => b[1]-a[1])
+      .map(([nome, qtd]) => {
+        const pct = Math.round((qtd/maxCult)*100);
+        const nomeSimples = nome.split('—')[1]?.trim() || nome.split(' ')[0];
+        return `<div style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="font-size:14px;color:var(--texto)">${nomeSimples}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--azul);font-weight:700">${qtd} bag${qtd>1?'s':''}</span>
           </div>
-        </div>`}).join('');
-    const stCls={em_estoque:'tag-verde',expedido:'tag-amarelo',perdido:'tag-vermelho'};
-    const stTxt={em_estoque:'Em estoque',expedido:'Expedido',perdido:'Perdido'};
-    g('bagsList').innerHTML=!bags.length?'<p class="vazio">Nenhum bag cadastrado ainda.</p>':
-      [...bags].reverse().map(b=>`
-        <div class="linha-item">
+          <div style="height:8px;background:var(--bg4);border-radius:4px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:var(--azul);border-radius:4px;transition:width .4s"></div>
+          </div>
+        </div>`;
+      }).join('');
+    g('dashCultivares').innerHTML = cultivarHTML || '<p class="vazio">Nenhum bag em estoque</p>';
+
+    // ── Lotes no armazém com dias ──
+    const lotesMap = {};
+    emEstoque.forEach(b => {
+      const lote = b.lote || '—';
+      if(!lotesMap[lote]){
+        lotesMap[lote] = {
+          lote, cultivar: b.cultivar_nome||'—',
+          qtd: 0, entrada: b.entrada_posicao || b.criado_em
+        };
+      }
+      lotesMap[lote].qtd++;
+      // Usar a entrada mais antiga como referência
+      const ts = b.entrada_posicao?.seconds || b.criado_em?.seconds || 0;
+      const atual = lotesMap[lote].entrada?.seconds || 0;
+      if(ts < atual) lotesMap[lote].entrada = b.entrada_posicao || b.criado_em;
+    });
+
+    const agora = Date.now() / 1000;
+    const lotesHTML = Object.values(lotesMap)
+      .sort((a,b) => (a.entrada?.seconds||0) - (b.entrada?.seconds||0))
+      .map(lt => {
+        const ts = lt.entrada?.seconds || 0;
+        const dias = ts ? Math.floor((agora - ts) / 86400) : null;
+        const nomeSimples = (lt.cultivar||'').split('—')[1]?.trim() || (lt.cultivar||'').split(' ')[0];
+        const alerta = dias !== null && dias >= 30;
+        const diasStr = dias !== null ? `${dias} dia${dias!==1?'s':''}` : '—';
+        return `<div class="linha-item" onclick="abrirLote('${lt.lote}')" style="cursor:pointer">
           <div>
-            <span class="item-num">${b.numero_bag}</span>
-            <span class="item-sub">${b.cultivar_nome||'—'} · ${b.localizacao_atual||'—'}</span>
+            <span class="item-num">${lt.lote}</span>
+            <span class="item-sub">${nomeSimples} · ${lt.qtd} bag${lt.qtd>1?'s':''}</span>
           </div>
-          <span class="tag ${stCls[b.status]||'tag-cinza'}">${stTxt[b.status]||b.status||'—'}</span>
-        </div>`).join('');
+          <span class="tag ${alerta?'tag-vermelho':'tag-cinza'}" style="font-size:11px">
+            ${alerta?'⚠️ ':''}${diasStr}
+          </span>
+        </div>`;
+      }).join('');
+    g('dashLotesAntigos').innerHTML = lotesHTML || '<p class="vazio">Nenhum lote em estoque</p>';
 
-    if (!navigator.onLine) {
-      flash('Mostrando último estoque salvo (offline)', 'warn');
-    }
+    // ── Últimas movimentações ──
+    const movSnap = await db.collection('movimentacoes').limit(15).get();
+    const movs = movSnap.docs.map(d=>d.data())
+      .sort((a,b)=>(b.criado_em?.seconds||0)-(a.criado_em?.seconds||0));
+    g('movList').innerHTML = movs.length === 0
+      ? '<p class="vazio">Nenhuma movimentação ainda.</p>'
+      : movs.map(m => {
+          return `<div class="tl-item">
+            <div class="tl-dot" style="background:${EV_COR[m.tipo_evento]||'#475569'}"></div>
+            <div class="tl-corpo">
+              <div class="tl-evento">${m.numero_bag||'—'} — ${EV_LABEL[m.tipo_evento]||m.tipo_evento}</div>
+              <div class="tl-meta">${fmtData(m.criado_em)} · ${m.operador||'—'}</div>
+            </div>
+          </div>`;
+        }).join('');
+
+    if(!navigator.onLine) flash('Mostrando último estoque salvo (offline)', 'warn');
+
   } catch(e) {
-    g('movList').innerHTML = '<p class="vazio">Não foi possível carregar — sem dados salvos localmente ainda.</p>';
-    g('bagsList').innerHTML = '';
-    flash('Erro ao carregar estoque: '+e.message, 'err');
+    g('movList').innerHTML = '<p class="vazio">Não foi possível carregar — sem dados localmente ainda.</p>';
+    flash('Erro ao carregar estoque: ' + e.message, 'err');
   }
-};
+}
 
 // ── LOTES ──
 let loteAtivo = null;
@@ -4454,16 +4522,17 @@ select option{background:var(--bg2)}
 <!-- ══ DASHBOARD ══ -->
 <main class="screen" id="screen-dashboard">
   <div class="pg-titulo">Estoque</div>
-  <div class="pg-sub">Visão geral dos bags cadastrados</div>
+  <div class="pg-sub">Visão geral da operação</div>
 
+  <!-- KPIs principais -->
   <div class="kpi-row">
     <div class="kpi">
       <div class="kpi-val" id="kTotal" style="color:var(--azul)">—</div>
-      <div class="kpi-lbl">Total</div>
+      <div class="kpi-lbl">Total bags</div>
     </div>
     <div class="kpi">
       <div class="kpi-val" id="kEstoque" style="color:var(--verde)">—</div>
-      <div class="kpi-lbl">Estoque</div>
+      <div class="kpi-lbl">Em estoque</div>
     </div>
     <div class="kpi">
       <div class="kpi-val" id="kExpedido" style="color:var(--amarelo)">—</div>
@@ -4471,14 +4540,38 @@ select option{background:var(--bg2)}
     </div>
   </div>
 
+  <!-- KPIs secundários -->
+  <div class="kpi-row" style="margin-top:0">
+    <div class="kpi">
+      <div class="kpi-val" id="kLotes" style="color:var(--texto)">—</div>
+      <div class="kpi-lbl">Lotes ativos</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="kSemTag" style="color:var(--vermelho)">—</div>
+      <div class="kpi-lbl">Sem tag</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="kPosicoes" style="color:var(--texto)">—</div>
+      <div class="kpi-lbl">Posições usadas</div>
+    </div>
+  </div>
+
+  <!-- Por cultivar -->
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-plant"></i> Por cultivar</div>
+    <div id="dashCultivares"><p class="vazio">Carregando...</p></div>
+  </div>
+
+  <!-- Lotes mais antigos -->
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-clock"></i> Lotes no armazém</div>
+    <div id="dashLotesAntigos"><p class="vazio">Carregando...</p></div>
+  </div>
+
+  <!-- Últimas movimentações -->
   <div class="secao">
     <div class="secao-titulo"><i class="ti ti-history"></i> Últimas movimentações</div>
     <div class="tl-wrap" id="movList"><p class="vazio">Carregando...</p></div>
-  </div>
-
-  <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-packages"></i> Bags cadastrados</div>
-    <div id="bagsList"><p class="vazio">Carregando...</p></div>
   </div>
 
   <button class="btn btn-cinza" onclick="carregarDashboard()">
