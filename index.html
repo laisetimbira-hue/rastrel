@@ -524,8 +524,11 @@ function onEpcInput(val) {
     const snapEpc = await db.collection('bags').where('epc','==',epc).get();
     if(!snapEpc.empty){
       const bagExiste = snapEpc.docs[0].data();
-      if(st) st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
-      return;
+      // Tag de bag expedido está livre para reutilização
+      if(bagExiste.status !== 'expedido'){
+        if(st) st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
+        return;
+      }
     }
     if(st) st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag livre — selecione o bag abaixo</span>';
     await carregarBagsPendentes(epc);
@@ -1204,6 +1207,7 @@ async function devolverTagRapido(bagId, epc, numeroBag) {
   await db.collection('bags').doc(bagId).update({
     epc:           null,
     epc_anterior:  epc,
+    // Bag expedido mantém status 'expedido' — só a tag é liberada para reutilização
     atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
   });
   await db.collection('movimentacoes').add({
@@ -2533,6 +2537,7 @@ async function desvinculaTag() {
     await db.collection('bags').doc(bag.id).update({
       epc:           null,
       epc_anterior:  epc,
+      status:        'aguardando_tag', // volta para a lista de pendentes
       atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -2890,14 +2895,19 @@ async function lerNFC() {
       _epcLido = epc;
       if(st) st.innerHTML = `<span style="color:var(--verde)">✓ Tag lida: <span class="mono">${epc}</span></span>`;
 
-      // Verificar se já está vinculada
+      // Verificar se já está vinculada a bag ativo (não expedido)
       if(db){
         const snapEpc = await db.collection('bags').where('epc','==',epc).get();
         if(!snapEpc.empty){
           const bagExiste = snapEpc.docs[0].data();
-          if(st) st.innerHTML = `<span style="color:var(--vermelho)">⚠️ Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
-          _epcLido = null;
-          return;
+          // Se o bag foi expedido, a tag está disponível para reutilização
+          if(bagExiste.status === 'expedido'){
+            // Tag livre — prosseguir normalmente
+          } else {
+            if(st) st.innerHTML = `<span style="color:var(--vermelho)">⚠️ Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
+            _epcLido = null;
+            return;
+          }
         }
       }
 
