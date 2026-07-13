@@ -1923,6 +1923,64 @@ function capacidadeDaPosicao(pos) {
   return CIMA.includes(pos) ? CAPACIDADE_POSICAO_A : CAPACIDADE_POSICAO;
 }
 
+let _filtroMapaTimer = null;
+
+function filtrarMapa(valor) {
+  clearTimeout(_filtroMapaTimer);
+  const st = g('mapaBuscaStatus');
+  const termo = valor.trim().toUpperCase();
+
+  if(!termo) {
+    limparFiltroMapa();
+    return;
+  }
+
+  _filtroMapaTimer = setTimeout(() => {
+    // Destacar cards que contêm o lote buscado, esmaecendo os outros
+    const cards = document.querySelectorAll('.posicao-nova');
+    let encontrados = 0;
+
+    cards.forEach(card => {
+      // Verificar se alguma célula ocupada contém o termo buscado
+      const textos = card.querySelectorAll('.cel-lote, .cel-cultivar');
+      let temMatch = false;
+      textos.forEach(el => {
+        if(el.textContent.toUpperCase().includes(termo)) temMatch = true;
+      });
+
+      if(temMatch) {
+        card.style.opacity    = '1';
+        card.style.outline    = '2px solid var(--azul)';
+        card.style.borderColor = 'var(--azul)';
+        encontrados++;
+      } else {
+        card.style.opacity    = '0.25';
+        card.style.outline    = 'none';
+        card.style.borderColor = '';
+      }
+    });
+
+    if(st) {
+      st.innerHTML = encontrados > 0
+        ? `<span style="color:var(--azul)"><i class="ti ti-map-pin"></i> ${encontrados} posição${encontrados>1?'ões':''} com "${termo}"</span>`
+        : `<span style="color:var(--vermelho)">Lote "${termo}" não encontrado no mapa</span>`;
+    }
+  }, 300);
+}
+
+function limparFiltroMapa() {
+  const inp = g('mapaBusca');
+  if(inp) inp.value = '';
+  const st = g('mapaBuscaStatus');
+  if(st) st.innerHTML = '';
+  // Restaurar todos os cards
+  document.querySelectorAll('.posicao-nova').forEach(card => {
+    card.style.opacity    = '';
+    card.style.outline    = '';
+    card.style.borderColor = '';
+  });
+}
+
 async function carregarMapa(forcarServidor=false) {
   renderGrade('gradeCima',  CIMA,  {}, CAPACIDADE_POSICAO_A, LINHAS_POSICAO_A);
   renderGrade('gradeBaixo', BAIXO, {});
@@ -3994,6 +4052,16 @@ select option{background:var(--bg2)}
 <main class="screen" id="screen-mapa">
   <div class="pg-titulo">Mapa</div>
   <div class="pg-sub" id="mapaSubtitulo">Armazém 3 — posições em tempo real</div>
+
+  <!-- Busca por lote -->
+  <div class="epc-wrap" style="margin-bottom:12px">
+    <input class="epc-input" id="mapaBusca" type="text"
+      placeholder="Buscar lote no mapa... ex: 26S01C"
+      autocomplete="off" autocorrect="off" spellcheck="false"
+      oninput="filtrarMapa(this.value)"/>
+    <button class="epc-limpar" onclick="limparFiltroMapa()">✕</button>
+  </div>
+  <div id="mapaBuscaStatus" style="font-size:13px;color:var(--texto2);margin-bottom:8px;min-height:18px"></div>
 
   <!-- Legenda -->
   <div class="mapa-legenda">
