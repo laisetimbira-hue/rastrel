@@ -1170,77 +1170,13 @@ async function confirmarExpedicao() {
     window.cancelarPedido();
     carregarMapa(true); // forçar servidor para remover bags expedidos do mapa
 
-    if(bagsExpedidos.length > 0){
-      setTimeout(() => mostrarPainelDevolucao(bagsExpedidos), 800);
-    }
   } catch(e) {
     flash('Erro ao confirmar expedição: ' + e.message, 'err');
   }
 }
 
-function mostrarPainelDevolucao(bags) {
-  const painel = g('painelDevolucao');
-  const lista  = g('painelDevolucaoLista');
-  if(!painel || !lista) return;
 
-  lista.innerHTML = bags.map(b=>`
-    <div class="linha-item" id="devol-${b.id}">
-      <div>
-        <span class="item-num">${b.numero_bag}</span>
-        <span class="item-sub mono" style="color:var(--azul);font-size:12px">${b.epc}</span>
-      </div>
-      <button class="btn-devol" onclick="devolverTagRapido('${b.id}','${b.epc}','${b.numero_bag}')">
-        <i class="ti ti-unlink"></i> Liberar tag
-      </button>
-    </div>`).join('');
 
-  painel.style.display = 'block';
-  // Scroll até o painel
-  painel.scrollIntoView({behavior:'smooth', block:'start'});
-}
-
-async function devolverTagRapido(bagId, epc, numeroBag) {
-  if(!db) return;
-  const op  = localStorage.getItem('operador')    || 'Operador';
-  const dev = localStorage.getItem('dispositivo') || 'App';
-
-  await db.collection('bags').doc(bagId).update({
-    epc:           null,
-    epc_anterior:  epc,
-    // Bag expedido mantém status 'expedido' — só a tag é liberada para reutilização
-    atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-  await db.collection('movimentacoes').add({
-    bag_id:        bagId,
-    numero_bag:    numeroBag,
-    tipo_evento:   'devolucao_tag',
-    observacao:    `Tag devolvida — EPC ${epc} liberado para reutilização`,
-    epc_devolvido: epc,
-    operador:      op,
-    dispositivo:   dev,
-    criado_em:     firebase.firestore.FieldValue.serverTimestamp(),
-  });
-
-  // Marcar como liberada na lista
-  const linha = g('devol-'+bagId);
-  if(linha){
-    linha.innerHTML = `
-      <div>
-        <span class="item-num">${numeroBag}</span>
-        <span class="item-sub mono" style="color:var(--azul);font-size:12px">${epc}</span>
-      </div>
-      <span class="tag tag-verde"><i class="ti ti-check"></i> Liberada</span>`;
-  }
-
-  // Verificar se todas foram liberadas
-  const pendentes = g('painelDevolucao').querySelectorAll('.btn-devol');
-  if(pendentes.length === 0){
-    setTimeout(()=>{
-      g('painelDevolucao').style.display='none';
-      flash('Todas as tags liberadas para reutilização!','ok');
-    }, 1000);
-  }
-}
 function pausarConferencia() {
   pararNFCCarga();
   g('conferenciaPainel').style.display = 'none';
@@ -1256,6 +1192,8 @@ function cancelarConferencia() {
 
 function cancelarPedido() {
   pararNFCCarga();
+  _ultimoEpcCarga   = null;
+  _ultimoEpcCargaTs = 0;
   pedidoAtivo=null; cargaLidos=[]; cargaDivs=[]; itensOC=[];
   localStorage.removeItem('expedicao_ativa');
   g('conferenciaPainel').style.display='none';
@@ -2528,8 +2466,6 @@ async function removerDoPosicao(bagId, pos) {
 }
 
 // ── DESVINCULAR TAG ──
-let bagParaDesvincular = null;
-let epcDesvinculaTimer = null;
 
 window.onEpcDesvincular = function(val) {
   clearTimeout(epcDesvinculaTimer);
@@ -2579,112 +2515,6 @@ window.onEpcDesvincular = function(val) {
   }, 500);
 };
 
-async function desvinculaTag() {
-  if(!bagParaDesvincular || !db) return;
-  const bag = bagParaDesvincular;
-  // EPC vem do objeto bagParaDesvincular (preenchido pelo onEpcDesvincular)
-  const epc = bag.epc;
-  if(!epc){ flash('EPC não encontrado — tente ler a tag novamente','err'); return; }
-
-  if(!confirm(`Desvincular a tag do bag ${bag.numero_bag}?\n\nO histórico será mantido e a tag ficará disponível para reutilização.`)) return;
-
-  const op  = localStorage.getItem('operador')    || 'Operador';
-  const dev = localStorage.getItem('dispositivo') || 'App';
-
-  try {
-    await db.collection('bags').doc(bag.id).update({
-      epc:           null,
-      epc_anterior:  epc,
-      status:        'aguardando_tag', // volta para a lista de pendentes
-      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-
-    await db.collection('movimentacoes').add({
-      bag_id:        bag.id,
-      numero_bag:    bag.numero_bag,
-      tipo_evento:   'devolucao_tag',
-      observacao:    `Tag devolvida — EPC ${epc} liberado para reutilização`,
-      epc_devolvido: epc,
-      operador:      op,
-      dispositivo:   dev,
-      criado_em:     firebase.firestore.FieldValue.serverTimestamp(),
-    });
-
-    flash('Tag liberada! Aproxime a tag novamente para vincular a outro bag.', 'ok');
-
-    // Limpar estado
-    g('epcDesvinculaStatus').textContent = '';
-    g('desvinculaPreview').style.display = 'none';
-    g('btnDesvincular').style.display    = 'none';
-    bagParaDesvincular = null;
-  } catch(e) {
-    flash('Erro ao desvincular: ' + e.message, 'err');
-  }
-}
-
-// ── DEEP LINK VIA NFC ──
-// Ativado quando a URL contém ?bag=NUMERO (gravado na tag NFC).
-// Aguarda o Firebase estar pronto e abre o bag na tela de Vincular.
-async function abrirBagPorDeepLink(numeroBag) {
-  // Aguarda db estar disponível (até 8 segundos)
-  let tentativas = 0;
-  while (!db && tentativas < 16) {
-    await new Promise(r => setTimeout(r, 500));
-    tentativas++;
-  }
-  if (!db) {
-    flash('Não foi possível abrir — Firebase não conectado', 'err');
-    return;
-  }
-
-  // Limpar URL para não reprocessar ao recarregar
-  const urlAtual = new URL(window.location.href);
-  urlAtual.searchParams.delete('bag');
-  window.history.replaceState({}, '', urlAtual.toString());
-
-  // ── Verificar se há expedição ativa no Firebase ──
-  const snapOC = await db.collection('pedidos_carga')
-    .where('status', '==', 'conferindo')
-    .limit(1).get();
-
-  if (!snapOC.empty) {
-    const ocDoc  = snapOC.docs[0];
-    const ocData = ocDoc.data();
-    pedidoAtivo  = { id: ocDoc.id, numero: ocData.numero_pedido };
-    localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
-
-    goTab('expedicao');
-    g('pedidoForm').style.display        = 'none';
-    g('conferenciaPainel').style.display = 'block';
-    g('pedidoInfo').textContent          = ocData.numero_pedido + (ocData.placa_veiculo ? ' · ' + ocData.placa_veiculo : '');
-
-    await registrarBagNaCarga_peloNumero(numeroBag);
-    return;
-  }
-
-  // ── Sem expedição ativa — fluxo normal de vincular ──
-  const snap = await db.collection('bags')
-    .where('numero_bag', '==', numeroBag).get();
-
-  if (snap.empty) {
-    flash('Bag ' + numeroBag + ' não encontrado', 'err');
-    goTab('vincular');
-    return;
-  }
-
-  const bag = { id: snap.docs[0].id, ...snap.docs[0].data() };
-  goTab('vincular');
-
-  if (bag.status === 'aguardando_tag') {
-    mostrarPainelConfirmacaoNFC(bag);
-  } else if (bag.status === 'em_estoque') {
-    flash('📦 ' + numeroBag + ' · ' + (bag.cultivar_nome||'—') + ' · ' + (bag.localizacao_atual||'—'), 'ok');
-  } else if (bag.status === 'expedido') {
-    flash('📦 ' + numeroBag + ' já foi expedido', 'warn');
-  } else {
-    flash('📦 ' + numeroBag + ' · status: ' + bag.status, 'warn');
-  }
-}
 
 function mostrarPainelConfirmacaoNFC(bag) {
   g('secBagsPendentes').style.display = 'none';
@@ -2997,49 +2827,9 @@ function pararNFC() {
   }
 }
 
-async function lerNFCParaDesvincular() {
-  if (!('NDEFReader' in window)) { flash('NFC não disponível','err'); return; }
-  const btn = g('btnNFCDesvincular');
-  const st  = g('epcDesvinculaStatus');
-  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-nfc"></i> Aguardando tag...'; }
-  if(st)  st.innerHTML = '📡 Aproxime a tag...';
-  try {
-    const reader = new NDEFReader();
-    await reader.scan();
-    reader.addEventListener('reading', ({ message, serialNumber }) => {
-      const epc = _extrairEpc(message, serialNumber);
-      if(!epc) return;
-      if(navigator.vibrate) navigator.vibrate(80);
-      if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-nfc"></i> Ler tag para desvincular'; }
-      onEpcDesvincular(epc);
-    });
-  } catch(e) {
-    if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-nfc"></i> Ler tag para desvincular'; }
-    if(st)  st.innerHTML = `<span style="color:var(--vermelho)">Erro: ${e.message}</span>`;
-  }
-}
 
-// ── TEMA CLARO/ESCURO ──
-function alternarTema() {
-  const body = document.body;
-  const btn = g('btnTema');
-  const meta = document.getElementById('metaTheme');
-  if (body.classList.contains('tema-escuro')) {
-    body.classList.remove('tema-escuro');
-    btn.textContent = '🌙';
-    if (meta) meta.content = '#f0f4f8';
-    localStorage.setItem('tema', 'claro');
-  } else {
-    body.classList.add('tema-escuro');
-    btn.textContent = '☀️';
-    if (meta) meta.content = '#080e1c';
-    localStorage.setItem('tema', 'escuro');
-  }
-}
-
-// ── TAMANHO DA FONTE ──
-const FONTES = [12, 13, 14, 15, 16, 17, 18, 20];
-let fonteIdx = 6; // padrão: 18px
+const FONTES = [13, 14, 15, 16, 17, 18, 19, 20, 22, 24];
+let fonteIdx = 5; // padrão: 18px
 
 function aumentarFonte() {
   if (fonteIdx < FONTES.length - 1) fonteIdx++;
@@ -4383,34 +4173,6 @@ select option{background:var(--bg2)}
       </button>
     </div>
   </div>
-
-  <!-- Separador -->
-  <div style="display:flex;align-items:center;gap:10px;margin:20px 0 10px">
-    <div style="flex:1;height:1px;background:var(--borda)"></div>
-    <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">REUTILIZAR TAG</span>
-    <div style="flex:1;height:1px;background:var(--borda)"></div>
-  </div>
-
-  <div class="secao" style="border-color:rgba(248,113,113,.25)">
-    <div class="secao-titulo" style="color:var(--vermelho)">
-      <i class="ti ti-unlink"></i> Desvincular tag
-    </div>
-    <p style="font-size:14px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
-      Leia a tag que quer liberar. O sistema registra a devolução no histórico e o UID fica disponível para vincular a outro bag.
-    </p>
-    <button class="btn btn-cinza" id="btnNFCDesvincular" onclick="lerNFCParaDesvincular()"
-      style="border-color:var(--vermelho);color:var(--vermelho)">
-      <i class="ti ti-nfc"></i> Ler tag para desvincular
-    </button>
-    <div class="epc-status" id="epcDesvinculaStatus" style="margin-top:10px"></div>
-    <div id="desvinculaPreview" style="display:none" class="desvincular-preview">
-      <div class="desvincular-preview-titulo">Tag vinculada a:</div>
-      <div id="desvinculaInfo"></div>
-    </div>
-    <button class="btn btn-verm" id="btnDesvincular" onclick="desvinculaTag()" style="display:none;margin-top:10px">
-      <i class="ti ti-unlink"></i> Confirmar devolução da tag
-    </button>
-  </div>
 </main>
 
 <!-- ══ EXPEDIÇÃO ══ -->
@@ -4550,22 +4312,6 @@ select option{background:var(--bg2)}
     <button class="btn btn-verm" onclick="cancelarConferencia()" style="margin-top:4px">
       <i class="ti ti-x"></i> Cancelar e descartar conferência
     </button>
-  </div>
-
-  <!-- DEVOLUÇÃO DE TAGS -->
-  <div id="painelDevolucao" style="display:none;margin-top:4px">
-    <div class="secao" style="border-color:rgba(251,191,36,.3)">
-      <div class="secao-titulo" style="color:var(--amarelo)">
-        <i class="ti ti-tag-off"></i> Remova e libere as tags
-      </div>
-      <p style="font-size:14px;color:var(--texto2);margin-bottom:14px;line-height:1.6">
-        Retire a tag de cada bag expedido e toque <strong>Liberar tag</strong>.
-      </p>
-      <div id="painelDevolucaoLista"></div>
-      <button class="btn btn-cinza" style="margin-top:12px" onclick="g('painelDevolucao').style.display='none'">
-        <i class="ti ti-x"></i> Fechar sem liberar
-      </button>
-    </div>
   </div>
 
   <!-- HISTÓRICO -->
