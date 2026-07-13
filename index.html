@@ -2831,6 +2831,16 @@ function pararNFC() {
 const FONTES = [13, 14, 15, 16, 17, 18, 19, 20, 22, 24];
 let fonteIdx = 5; // padrão: 18px
 
+function fmtData(ts) {
+  if(!ts) return '—';
+  const d = ts.toDate ? ts.toDate() : new Date(ts.seconds * 1000);
+  const hoje = new Date();
+  const isHoje = d.toDateString() === hoje.toDateString();
+  const hora = d.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+  if(isHoje) return 'hoje ' + hora;
+  return d.toLocaleDateString('pt-BR') + ' ' + hora;
+}
+
 function aumentarFonte() {
   if (fonteIdx < FONTES.length - 1) fonteIdx++;
   aplicarFonte();
