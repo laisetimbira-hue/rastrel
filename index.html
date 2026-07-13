@@ -451,14 +451,23 @@ function goTab(name) {
   if(name==='lotes') carregarLotes();
   if(name==='mapa') carregarMapa();
   if(name==='vincular') {
-    // Resetar debounce para não bloquear novas leituras
     _ultimoEpcCarga   = null;
     _ultimoEpcCargaTs = 0;
     _epcLido          = null;
-    carregarBagsPendentes('__manual__');
-    // Ativar NFC automaticamente se suportado
+    // Aguardar Firebase se ainda não conectou
+    if(db) {
+      carregarBagsPendentes('__manual__');
+    } else {
+      const aguardar = setInterval(() => {
+        if(db) {
+          clearInterval(aguardar);
+          carregarBagsPendentes('__manual__');
+        }
+      }, 300);
+      setTimeout(() => clearInterval(aguardar), 8000);
+    }
     if ('NDEFReader' in window) {
-      pararNFC(); // garante estado limpo
+      pararNFC();
       setTimeout(() => lerNFC(), 400);
     }
   }
@@ -2869,9 +2878,12 @@ function carregarPreferencias() {
     aplicarFonte();
   }
   // Carregar OCs aguardando após Firebase conectar
-  // (garante que aparecem mesmo se o usuário não abriu a aba Expedição)
-  if (typeof carregarOCsAguardando === 'function') {
-    carregarOCsAguardando();
+  if (typeof carregarOCsAguardando === 'function') carregarOCsAguardando();
+
+  // Se a aba Vincular estiver aberta, carregar lista de bags pendentes agora
+  const telaVincular = g('screen-vincular');
+  if (telaVincular && telaVincular.classList.contains('active')) {
+    carregarBagsPendentes('__manual__');
   }
 }
 
