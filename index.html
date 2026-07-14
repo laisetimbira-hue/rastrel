@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f0f4f8" id="metaTheme"/>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<title>SeedBase RFID</title>
+<title>RASTREL</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/dist/tabler-icons.min.css"/>
 
@@ -3817,7 +3817,7 @@ select option{background:var(--bg2)}
 <nav class="drawer" id="drawer" aria-label="Menu principal">
   <div class="drawer-header">
     <div>
-      <div class="drawer-logo">SeedBase <span class="drawer-logo-badge">RFID</span></div>
+      <div class="drawer-logo">RASTREL</div>
       <div class="drawer-sub">Safra 25/26 · Armazém 3</div>
     </div>
     <button class="drawer-fechar" onclick="fecharDrawer()" aria-label="Fechar menu">
@@ -3828,14 +3828,14 @@ select option{background:var(--bg2)}
     </button>
   </div>
   <div class="drawer-nav">
-    <div class="drawer-item" id="nav-mapa" onclick="goTab('mapa')">
-      <i class="ti ti-map" aria-hidden="true"></i><span>Mapa</span>
-    </div>
     <div class="drawer-item" id="nav-lotes" onclick="goTab('lotes')">
       <i class="ti ti-clipboard-list" aria-hidden="true"></i><span>Lotes</span>
     </div>
     <div class="drawer-item active" id="nav-vincular" onclick="goTab('vincular')">
       <i class="ti ti-tag" aria-hidden="true"></i><span>Vincular</span>
+    </div>
+    <div class="drawer-item" id="nav-mapa" onclick="goTab('mapa')">
+      <i class="ti ti-map" aria-hidden="true"></i><span>Mapa</span>
     </div>
     <div class="drawer-item" id="nav-expedicao" onclick="goTab('expedicao')">
       <i class="ti ti-truck" aria-hidden="true"></i><span>Expedição</span>
@@ -4428,7 +4428,7 @@ select option{background:var(--bg2)}
 <!-- ══ CONFIG ══ -->
 <main class="screen" id="screen-config">
   <div class="pg-titulo">Configurações</div>
-  <div class="pg-sub">Firebase, operador e leitor RFID</div>
+  <div class="pg-sub">Firebase, operador e configurações</div>
 
 
   <div class="secao">
@@ -4465,7 +4465,7 @@ select option{background:var(--bg2)}
   </div>
 
   <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-bluetooth"></i> Leitor RFID — modo HID</div>
+    <div class="secao-titulo"><i class="ti ti-bluetooth"></i> Leitor NFC — modo HID</div>
     <div class="step">
       <div class="step-n">1</div>
       <div class="step-txt">Configure o leitor no modo <b>HID Keyboard</b> (veja o manual do seu leitor)</div>
