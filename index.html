@@ -504,13 +504,13 @@ function goTab(name) {
 
 function abrirDrawer() {
   g('drawer').classList.add('open');
-  g('drawerOverlay').classList.add('show');
+  g('drawerOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
 }
 
 function fecharDrawer() {
   g('drawer').classList.remove('open');
-  g('drawerOverlay').classList.remove('show');
+  g('drawerOverlay').classList.remove('open');
   document.body.style.overflow = '';
 }
 
