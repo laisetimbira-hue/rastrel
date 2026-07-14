@@ -143,7 +143,12 @@ const EV_COR = {
 };
 
 let pedidoAtivo=null, cargaLidos=[], cargaDivs=[], epcTimer=null;
-let itensOC = []; // itens esperados na OC: [{cultivar, quantidade}]
+let itensOC = [];
+let nfcAtivo = false;
+let nfcReader = null;
+let _epcLido  = null;
+let nfcCargaAtivo = false;
+let nfcCargaReader = null;
 
 // Restaurar expedição ativa do localStorage (persiste entre recarregamentos do Safari)
 const _expedicaoSalva = localStorage.getItem('expedicao_ativa');
@@ -435,6 +440,8 @@ const TAB_NOMES = {
 };
 
 function goTab(name) {
+  fecharDrawer();
+  window.scrollTo(0,0);
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.drawer-item').forEach(t=>t.classList.remove('active'));
   const navEl = g('nav-'+name);
@@ -498,8 +505,6 @@ function goTab(name) {
         }).catch(()=>{});
     }
   }
-  fecharDrawer();
-  window.scrollTo(0,0);
 }
 
 function abrirDrawer() {
@@ -2671,8 +2676,6 @@ function cancelarConfirmacaoNFC() {
 }
 
 // ── LEITURA NFC ──
-let nfcCargaAtivo = false;
-let nfcCargaReader = null;
 
 async function lerNFCCarga() {
   if (!('NDEFReader' in window)) {
