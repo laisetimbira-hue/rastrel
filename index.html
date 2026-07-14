@@ -3361,7 +3361,14 @@ body{
   font-size:11px;font-weight:600;color:var(--texto3);
   letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px;
 }
-.mapa-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:6px}
+.mapa-scroll{
+  overflow-x:auto;
+  overflow-y:hidden;
+  -webkit-overflow-scrolling:touch;
+  padding-bottom:6px;
+  touch-action:pan-x;
+  overscroll-behavior-x:contain;
+}
 .mapa-grade{display:flex;flex-wrap:nowrap;gap:8px;width:max-content;padding:2px}
 .mapa-legenda{
   display:flex;flex-wrap:wrap;gap:12px;
