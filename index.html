@@ -3369,7 +3369,17 @@ body{
   touch-action:pan-x;
   overscroll-behavior-x:contain;
 }
-.mapa-grade{display:flex;flex-wrap:nowrap;gap:8px;width:max-content;padding:2px}
+.mapa-grade{
+  display:flex;
+  flex-wrap:nowrap;
+  gap:8px;
+  padding:2px 2px 10px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  -webkit-overflow-scrolling:touch;
+  touch-action:pan-x;
+  overscroll-behavior-x:contain;
+}
 .mapa-legenda{
   display:flex;flex-wrap:wrap;gap:12px;
   margin-bottom:14px;align-items:center;
