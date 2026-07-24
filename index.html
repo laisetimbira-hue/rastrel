@@ -1986,8 +1986,8 @@ const A4_SUPERIOR  = Array.from({length:9},  (_,i) => `A4B${i+14}`); // A4B14–
 const A4_INFERIOR  = [...Array.from({length:9}, (_,i) => `A4B${11-i}`), 'A4B1']; // A4B11→A4B3, A4B1
 const CAP_A4_SUP   = 5;  // 5 lotes por posição
 const CAP_A4_INF   = 10; // 10 lotes por posição
-const LIN_A4_SUP   = 3;  // linhas na tabela superior
-const LIN_A4_INF   = 5;  // linhas na tabela inferior
+const LIN_A4_SUP   = 5;  // 5 linhas, 1 coluna
+const LIN_A4_INF   = 10; // 10 linhas, 1 coluna
 
 function capacidadeA4(pos) {
   return A4_SUPERIOR.includes(pos) ? CAP_A4_SUP : CAP_A4_INF;
@@ -2141,8 +2141,9 @@ function renderGrade(elId, posicoes, porPosicao, capacidade=CAPACIDADE_POSICAO, 
       }
     }
 
-    const numLabel = pos.replace('A3B','B');
+    const numLabel = pos.startsWith('A4') ? pos : pos.replace('A3B','B');
     const totalLotes = lotes.length;
+    const umaColuna  = (linhas === capacidade); // A4: 1 coluna; A3: 2 colunas
 
     const renderSlot = (lt, idx) => {
       if(!lt) return `<td class="cel-slot cel-vazia"
@@ -2159,13 +2160,16 @@ function renderGrade(elId, posicoes, porPosicao, capacidade=CAPACIDADE_POSICAO, 
       </td>`;
     };
 
-    // Renderiza de trás para frente: slot 0 (primeiro a chegar = fundo)
-    // aparece na base da tabela, slot (linhas-1) aparece no topo (frente).
+    // Renderiza de trás para frente: slot 0 = fundo, último = frente
+    // umaColuna (A4): 1 célula por linha; duasColulas (A3): 2 células por linha
     let linhasHtml = '';
     for(let l=linhas-1; l>=0; l--){
-      const idxEsquerda = l;
-      const idxDireita  = l + linhas;
-      linhasHtml += `<tr>${renderSlot(slots[idxEsquerda], idxEsquerda)}${renderSlot(slots[idxDireita], idxDireita)}</tr>`;
+      if(umaColuna){
+        linhasHtml += `<tr>${renderSlot(slots[l], l)}</tr>`;
+      } else {
+        const idxE = l, idxD = l + linhas;
+        linhasHtml += `<tr>${renderSlot(slots[idxE], idxE)}${renderSlot(slots[idxD], idxD)}</tr>`;
+      }
     }
 
     return `<div class="posicao-nova" onclick="abrirPosicao('${pos}')">
