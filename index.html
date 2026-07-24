@@ -3203,6 +3203,69 @@ body{
 
 /* ── TELAS ── */
 .screen{display:none;padding:20px 16px 40px;max-width:680px;margin:0 auto}
+
+/* ── LAYOUT DESKTOP ── */
+@media (min-width:900px){
+  body{display:flex;flex-direction:column;min-height:100vh}
+
+  .header{position:sticky;top:0;z-index:300}
+
+  /* Wrapper principal */
+  .main-wrapper{
+    display:flex;
+    flex:1;
+    max-width:1400px;
+    width:100%;
+    margin:0 auto;
+    padding:0 24px;
+    gap:0;
+  }
+
+  /* Drawer vira sidebar fixa no desktop */
+  .drawer-overlay{display:none !important}
+  .drawer{
+    position:sticky;
+    top:64px;
+    height:calc(100vh - 64px);
+    transform:none !important;
+    width:220px;
+    flex-shrink:0;
+    border-right:1px solid var(--borda);
+    border-radius:0;
+    box-shadow:none;
+    overflow-y:auto;
+    z-index:1;
+  }
+  .drawer-header{padding:20px 16px 12px}
+  .drawer-logo{font-size:18px}
+  .hamburger{display:none}
+
+  /* Conteúdo principal */
+  .screen-wrapper{
+    flex:1;
+    min-width:0;
+    padding:0 0 0 32px;
+  }
+
+  .screen{
+    max-width:100%;
+    margin:0;
+    padding:24px 0 40px;
+  }
+
+  /* Mapa mais largo no desktop */
+  #screen-mapa .mapa-grade,
+  #screen-mapa .mapa-grade{
+    max-width:100%;
+  }
+
+  /* KPIs em 6 colunas no desktop */
+  .kpi-row{grid-template-columns:repeat(6,1fr)}
+
+  /* Modal mais largo */
+  .modal-box{max-width:600px;border-radius:var(--r);margin:auto}
+  .modal-overlay{align-items:center}
+}
 .screen.active{display:block}
 .pg-titulo{
   font-family:'Montserrat',sans-serif;
@@ -3766,6 +3829,7 @@ body.tema-claro{
   </div>
 </header>
 
+<div class="main-wrapper">
 <!-- NAVEGAÇÃO -->
 <!-- ── OVERLAY ── -->
 <div class="drawer-overlay" id="drawerOverlay" onclick="fecharDrawer()"></div>
@@ -3817,7 +3881,8 @@ body.tema-claro{
 </nav>
 
 
-<!-- ══ VINCULAR ══ -->
+<!-- ══ VINCULAR ══ --><div class="screen-wrapper">
+
 <main class="screen" id="screen-mapa">
   <div class="pg-titulo">Mapa</div>
 
@@ -4513,5 +4578,7 @@ body.tema-claro{
   </div>
 </main>
 
+</div><!-- /screen-wrapper -->
+</div><!-- /main-wrapper -->
 </body>
 </html>
