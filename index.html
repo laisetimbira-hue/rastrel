@@ -456,7 +456,8 @@ function goTab(name) {
   if(titulo) titulo.textContent = TAB_NOMES[name] || name;
   if(name==='dashboard') carregarDashboard();
   if(name==='lotes') carregarLotes();
-  if(name==='mapa') carregarMapa();
+  if(name==='mapa')  { if(_armazemAtivo==='A3') carregarMapa(); else carregarMapa4(); }
+  if(name==='mapa4') carregarMapa4();
   if(name==='vincular') {
     _ultimoEpcCarga   = null;
     _ultimoEpcCargaTs = 0;
@@ -1872,6 +1873,8 @@ function labelPosicaoSlot(indice, capacidade=CAPACIDADE_POSICAO) {
 // Devolve a capacidade real de uma posição, considerando que o Lado A
 // (B11–B21) tem 6 lugares por pilha e o Lado B (B1–B10) tem 10.
 function capacidadeDaPosicao(pos) {
+  if(A4_SUPERIOR.includes(pos)) return CAP_A4_SUP;
+  if(A4_INFERIOR.includes(pos)) return CAP_A4_INF;
   return CIMA.includes(pos) ? CAPACIDADE_POSICAO_A : CAPACIDADE_POSICAO;
 }
 
@@ -1929,6 +1932,124 @@ function limparFiltroMapa() {
   document.querySelectorAll('.posicao-nova').forEach(card => {
     card.style.opacity    = '';
     card.style.outline    = '';
+    card.style.borderColor = '';
+  });
+}
+
+let _armazemAtivo = 'A3';
+
+function alternarArmazem(armazem) {
+  _armazemAtivo = armazem;
+  const btnA3 = g('btnMapaA3');
+  const btnA4 = g('btnMapaA4');
+  const mapaA3 = g('mapaArmazem3');
+  const mapaA4 = g('mapaArmazem4');
+
+  if(armazem === 'A3') {
+    if(btnA3){ btnA3.style.background='var(--verde)'; btnA3.style.color='#fff'; btnA3.style.borderColor='var(--verde)'; }
+    if(btnA4){ btnA4.style.background='var(--bg2)'; btnA4.style.color='var(--texto2)'; btnA4.style.borderColor='var(--borda)'; }
+    if(mapaA3) mapaA3.style.display='block';
+    if(mapaA4) mapaA4.style.display='none';
+    limparFiltroMapaAtivo();
+    carregarMapa();
+  } else {
+    if(btnA4){ btnA4.style.background='var(--verde)'; btnA4.style.color='#fff'; btnA4.style.borderColor='var(--verde)'; }
+    if(btnA3){ btnA3.style.background='var(--bg2)'; btnA3.style.color='var(--texto2)'; btnA3.style.borderColor='var(--borda)'; }
+    if(mapaA4) mapaA4.style.display='block';
+    if(mapaA3) mapaA3.style.display='none';
+    limparFiltroMapaAtivo();
+    carregarMapa4();
+  }
+}
+
+function atualizarMapaAtivo() {
+  if(_armazemAtivo === 'A3') carregarMapa();
+  else carregarMapa4();
+}
+
+function filtrarMapaAtivo(valor) {
+  if(_armazemAtivo === 'A3') filtrarMapa(valor);
+  else filtrarMapa4(valor);
+}
+
+function limparFiltroMapaAtivo() {
+  const inp = g('mapaBusca');
+  if(inp) inp.value = '';
+  const st = g('mapaBuscaStatus');
+  if(st) st.innerHTML = '';
+  limparFiltroMapa();
+  limparFiltroMapa4();
+}
+
+// ── ARMAZÉM 4 ──
+const A4_SUPERIOR  = Array.from({length:9},  (_,i) => `A4B${i+14}`); // A4B14–A4B22
+const A4_INFERIOR  = [...Array.from({length:9}, (_,i) => `A4B${11-i}`), 'A4B1']; // A4B11→A4B3, A4B1
+const CAP_A4_SUP   = 5;  // 5 lotes por posição
+const CAP_A4_INF   = 10; // 10 lotes por posição
+const LIN_A4_SUP   = 3;  // linhas na tabela superior
+const LIN_A4_INF   = 5;  // linhas na tabela inferior
+
+function capacidadeA4(pos) {
+  return A4_SUPERIOR.includes(pos) ? CAP_A4_SUP : CAP_A4_INF;
+}
+
+async function carregarMapa4(forcarServidor=false) {
+  renderGrade('grade4Superior', A4_SUPERIOR, {}, CAP_A4_SUP, LIN_A4_SUP);
+  renderGrade('grade4Inferior', A4_INFERIOR, {}, CAP_A4_INF, LIN_A4_INF);
+  if(!db) return;
+  try {
+    const opcoes = forcarServidor ? { source:'server' } : !navigator.onLine ? { source:'cache' } : {};
+    const snap = await db.collection('bags')
+      .where('status','in',['em_estoque','aguardando_tag'])
+      .get(opcoes);
+    const bags = snap.docs.map(d=>({id:d.id,...d.data()}));
+    const porPosicao = {};
+    for(const b of bags){
+      const loc = (b.localizacao_atual||'').toUpperCase().replace(/ /g,'');
+      if(!loc) continue;
+      if(!porPosicao[loc]) porPosicao[loc] = [];
+      porPosicao[loc].push(b);
+    }
+    renderGrade('grade4Superior', A4_SUPERIOR, porPosicao, CAP_A4_SUP, LIN_A4_SUP);
+    renderGrade('grade4Inferior', A4_INFERIOR, porPosicao, CAP_A4_INF, LIN_A4_INF);
+  } catch(e) {
+    flash('Erro ao carregar Armazém 4: ' + e.message, 'err');
+  }
+}
+
+let _filtroMapa4Timer = null;
+
+function filtrarMapa4(valor) {
+  clearTimeout(_filtroMapa4Timer);
+  const st = g('mapa4BuscaStatus');
+  const termo = valor.trim().toUpperCase();
+  if(!termo) { limparFiltroMapa4(); return; }
+  _filtroMapa4Timer = setTimeout(() => {
+    const cards = g('mapaArmazem4')?.querySelectorAll('.posicao-nova') || [];
+    let encontrados = 0;
+    cards.forEach(card => {
+      const textos = card.querySelectorAll('.cel-cultivar, .cel-lote');
+      let temMatch = false;
+      textos.forEach(el => { if(el.textContent.toUpperCase().includes(termo)) temMatch = true; });
+      card.style.opacity     = temMatch ? '1' : '0.2';
+      card.style.outline     = temMatch ? '2px solid var(--verde)' : 'none';
+      card.style.borderColor = temMatch ? 'var(--verde)' : '';
+      if(temMatch) encontrados++;
+    });
+    if(st) st.innerHTML = encontrados > 0
+      ? `<span style="color:var(--verde)">${encontrados} posição${encontrados>1?'ões':''} com "${termo}"</span>`
+      : `<span style="color:var(--vermelho)">Lote "${termo}" não encontrado</span>`;
+  }, 300);
+}
+
+function limparFiltroMapa4() {
+  const inp = g('mapa4Busca');
+  if(inp) inp.value = '';
+  const st = g('mapa4BuscaStatus');
+  if(st) st.innerHTML = '';
+  g('mapaArmazem4')?.querySelectorAll('.posicao-nova').forEach(card => {
+    card.style.opacity = '';
+    card.style.outline = '';
     card.style.borderColor = '';
   });
 }
@@ -3695,15 +3816,30 @@ body.tema-claro{
 <!-- ══ VINCULAR ══ -->
 <main class="screen" id="screen-mapa">
   <div class="pg-titulo">Mapa</div>
-  <div class="pg-sub" id="mapaSubtitulo">Armazém 3 — posições em tempo real</div>
+
+  <!-- Seletor de armazém -->
+  <div style="display:flex;gap:8px;margin-bottom:16px">
+    <button id="btnMapaA3" onclick="alternarArmazem('A3')"
+      style="flex:1;padding:10px;border-radius:10px;border:1.5px solid var(--verde);
+      background:var(--verde);color:#fff;font-family:'Inter',sans-serif;
+      font-size:14px;font-weight:600;cursor:pointer;transition:all .15s">
+      <i class="ti ti-building-warehouse"></i> Armazém 3
+    </button>
+    <button id="btnMapaA4" onclick="alternarArmazem('A4')"
+      style="flex:1;padding:10px;border-radius:10px;border:1.5px solid var(--borda);
+      background:var(--bg2);color:var(--texto2);font-family:'Inter',sans-serif;
+      font-size:14px;font-weight:600;cursor:pointer;transition:all .15s">
+      <i class="ti ti-building-warehouse"></i> Armazém 4
+    </button>
+  </div>
 
   <!-- Busca por lote -->
   <div class="epc-wrap" style="margin-bottom:12px">
     <input class="epc-input" id="mapaBusca" type="text"
       placeholder="Buscar lote no mapa... ex: 26S01C"
       autocomplete="off" autocorrect="off" spellcheck="false"
-      oninput="filtrarMapa(this.value)"/>
-    <button class="epc-limpar" onclick="limparFiltroMapa()">✕</button>
+      oninput="filtrarMapaAtivo(this.value)"/>
+    <button class="epc-limpar" onclick="limparFiltroMapaAtivo()">✕</button>
   </div>
   <div id="mapaBuscaStatus" style="font-size:13px;color:var(--texto2);margin-bottom:8px;min-height:18px"></div>
 
@@ -3716,41 +3852,55 @@ body.tema-claro{
   </div>
 
   <!-- Mapa Armazém 3 -->
-  <div class="mapa-container" id="mapaArmazem3">
-
-    <!-- Lado de cima: B11 → B21 (esquerda para direita) -->
-    <div class="mapa-label-lado">
-      Lado A — B11 a B21
-      <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+  <div id="mapaArmazem3">
+    <div class="pg-sub" style="margin-bottom:10px">Armazém 3 — posições em tempo real</div>
+    <div class="mapa-container">
+      <div class="mapa-label-lado">
+        Lado A — B11 a B21
+        <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+      </div>
+      <div class="mapa-grade" id="gradeCima"></div>
+      <div class="mapa-corredor">
+        <i class="ti ti-arrow-left"></i> CORREDOR <i class="ti ti-arrow-right"></i>
+      </div>
+      <div class="mapa-label-lado">
+        Lado B — B10 a B1
+        <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+      </div>
+      <div class="mapa-grade" id="gradeBaixo"></div>
+      <div class="mapa-entrada"><i class="ti ti-door-enter"></i> ENTRADA</div>
     </div>
-    <div class="mapa-grade" id="gradeCima"></div>
-
-    <!-- Corredor -->
-    <div class="mapa-corredor">
-      <i class="ti ti-arrow-left"></i>
-      CORREDOR
-      <i class="ti ti-arrow-right"></i>
-    </div>
-
-    <!-- Lado de baixo: B10 → B1 (direita para esquerda) -->
-    <div class="mapa-label-lado">
-      Lado B — B10 a B1
-      <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
-    </div>
-    <div class="mapa-grade" id="gradeBaixo"></div>
-
-    <!-- Entrada -->
-    <div class="mapa-entrada">
-      <i class="ti ti-door-enter"></i> ENTRADA
-    </div>
-
   </div>
 
-  <button class="btn btn-cinza" style="margin-top:4px" onclick="carregarMapa()">
+  <!-- Mapa Armazém 4 (oculto por padrão) -->
+  <div id="mapaArmazem4" style="display:none">
+    <div class="pg-sub" style="margin-bottom:10px">Armazém 4 — posições em tempo real</div>
+    <div class="mapa-container">
+      <div class="mapa-label-lado">
+        Superior — A4B14 a A4B22
+        <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+      </div>
+      <div class="mapa-grade" id="grade4Superior"></div>
+      <div class="mapa-corredor" style="background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:var(--amarelo)">
+        <i class="ti ti-settings"></i> MÁQUINA TSI — A4B12 / A4B13 <i class="ti ti-settings"></i>
+      </div>
+      <div class="mapa-corredor">
+        <i class="ti ti-arrow-left"></i> CORREDOR — A4B2 <i class="ti ti-arrow-right"></i>
+      </div>
+      <div class="mapa-label-lado">
+        Inferior — A4B11 a A4B1
+        <span class="mapa-scroll-dica"><i class="ti ti-arrows-horizontal"></i> deslize</span>
+      </div>
+      <div class="mapa-grade" id="grade4Inferior"></div>
+      <div class="mapa-entrada"><i class="ti ti-door-enter"></i> ENTRADA</div>
+    </div>
+  </div>
+
+  <button class="btn btn-cinza" style="margin-top:4px" onclick="atualizarMapaAtivo()">
     <i class="ti ti-refresh"></i> Atualizar mapa
   </button>
 
-  <!-- Modal posição -->
+<!-- Modal posição -->
   <div id="modalPosicao" style="display:none" class="modal-posicao">
     <div class="modal-posicao-inner">
       <div class="modal-posicao-header">
@@ -3856,6 +4006,29 @@ body.tema-claro{
           <option value="A3B8">B8</option>
           <option value="A3B9">B9</option>
           <option value="A3B10">B10</option>
+        </optgroup>
+        <optgroup label="Armazém 4 — Superior (A4B14–A4B22)">
+          <option value="A4B14">A4B14</option>
+          <option value="A4B15">A4B15</option>
+          <option value="A4B16">A4B16</option>
+          <option value="A4B17">A4B17</option>
+          <option value="A4B18">A4B18</option>
+          <option value="A4B19">A4B19</option>
+          <option value="A4B20">A4B20</option>
+          <option value="A4B21">A4B21</option>
+          <option value="A4B22">A4B22</option>
+        </optgroup>
+        <optgroup label="Armazém 4 — Inferior (A4B1, A4B3–A4B11)">
+          <option value="A4B1">A4B1</option>
+          <option value="A4B3">A4B3</option>
+          <option value="A4B4">A4B4</option>
+          <option value="A4B5">A4B5</option>
+          <option value="A4B6">A4B6</option>
+          <option value="A4B7">A4B7</option>
+          <option value="A4B8">A4B8</option>
+          <option value="A4B9">A4B9</option>
+          <option value="A4B10">A4B10</option>
+          <option value="A4B11">A4B11</option>
         </optgroup>
         <option value="transito">Em trânsito / sem posição</option>
       </select>
