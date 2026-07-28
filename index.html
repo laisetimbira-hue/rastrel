@@ -709,7 +709,7 @@ function limparVincular() {
 }
 
 
-let _formNovaOCVisivel = true;
+let _formNovaOCVisivel = false;
 
 function toggleFormNovaOC() {
   const form = g('formNovaOC');
@@ -775,13 +775,6 @@ async function carregarOCsAguardando() {
 
   if(todasOCs.length === 0){
     secao.style.display = 'none';
-    if(!_formNovaOCVisivel){
-      _formNovaOCVisivel = true;
-      const formOC = g('formNovaOC');
-      if(formOC) formOC.style.display = 'block';
-      const btnOC = g('btnNovaOC');
-      if(btnOC) btnOC.innerHTML = '<i class="ti ti-x"></i> Cancelar';
-    }
     return;
   }
 
@@ -1277,46 +1270,84 @@ async function abrirHistoricoOC(ocId) {
   if(!ocDoc.exists) return;
   const oc = ocDoc.data();
 
+  // Sem orderBy para evitar índice composto — ordena no cliente
   const itensSnap = await db.collection('pedidos_carga')
-    .doc(ocId).collection('itens').orderBy('criado_em').get();
+    .doc(ocId).collection('itens').get();
+
+  const itensList = itensSnap.docs
+    .map(d => d.data())
+    .sort((a,b) => (a.criado_em?.seconds||0) - (b.criado_em?.seconds||0));
 
   const data = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
-  const itensEsperados = (oc.itens_esperados||[]).map(i=>
+  const hora = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
+
+  // Pedido (itens esperados)
+  const itensEsperadosHtml = (oc.itens_esperados||[]).map(i=>
     `<div class="linha-item">
-      <span class="item-num">${i.cultivar}</span>
+      <div>
+        <span class="item-num">${i.cultivar}</span>
+        <span class="item-sub">Pedido</span>
+      </div>
       <span class="tag tag-azul">${i.quantidade} bag${i.quantidade>1?'s':''}</span>
     </div>`).join('');
 
-  const itensConferidos = itensSnap.docs.map(d => {
-    const item = d.data();
+  // Resumo por cultivar — o que foi efetivamente carregado
+  const porCultivar = {};
+  itensList.forEach(item => {
+    const cult = item.cultivar || '—';
+    if(!porCultivar[cult]) porCultivar[cult] = { ok:0, div:0, lotes:[] };
+    if(item.status_validacao === 'divergencia') porCultivar[cult].div++;
+    else porCultivar[cult].ok++;
+    if(item.lote && !porCultivar[cult].lotes.includes(item.lote))
+      porCultivar[cult].lotes.push(item.lote);
+  });
+
+  const resumoHtml = Object.entries(porCultivar).map(([cult, dados]) => `
+    <div class="linha-item">
+      <div>
+        <span class="item-num">${cult}</span>
+        <span class="item-sub">Lotes: ${dados.lotes.join(', ')||'—'}</span>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center">
+        ${dados.ok ? `<span class="tag tag-verde">${dados.ok} OK</span>` : ''}
+        ${dados.div ? `<span class="tag tag-vermelho">${dados.div} Div.</span>` : ''}
+      </div>
+    </div>`).join('');
+
+  // Lista detalhada de bags
+  const bagsHtml = itensList.map(item => {
     const stCls = item.status_validacao === 'divergencia' ? 'tag-vermelho' : 'tag-verde';
     return `<div class="linha-item">
       <div>
-        <span class="item-num">${item.numero_bag}</span>
+        <span class="item-num">${item.numero_bag||'—'}</span>
         <span class="item-sub">${item.cultivar||'—'} · ${item.lote||'—'}</span>
       </div>
       <span class="tag ${stCls}">${item.status_validacao === 'divergencia' ? 'Diverg.' : 'OK'}</span>
     </div>`;
   }).join('');
 
-  // Mostrar modal
   g('modalTitulo').textContent  = oc.numero_pedido;
-  g('modalTotal').textContent   = itensSnap.size;
+  g('modalTotal').textContent   = itensList.length;
   g('modalOcupado').textContent = data;
-  g('modalLivre').textContent   = '—';
+  g('modalLivre').textContent   = hora;
 
   g('modalBags').innerHTML = `
     <div style="margin-bottom:12px">
-      <div class="secao-label">Cliente / Placa</div>
-      <div style="font-size:14px;color:var(--texto2)">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
+      <div class="secao-label">Cliente · Placa · Data</div>
+      <div style="font-size:14px;color:var(--texto2)">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'} · ${data} ${hora}</div>
     </div>
     ${oc.tsi ? `<div style="margin-bottom:12px">
       <div class="secao-label">TSI</div>
       <div style="font-size:14px;color:var(--azul)">${oc.tsi}</div>
     </div>` : ''}
-    ${itensEsperados ? `<div class="secao-label" style="margin-top:10px">Pedido</div>${itensEsperados}` : ''}
-    <div class="secao-label" style="margin-top:14px">Bags conferidos</div>
-    ${itensConferidos || '<p class="vazio">Nenhum</p>'}
+    ${oc.itens_esperados?.length ? `
+      <div class="secao-label" style="margin-top:10px">Pedido</div>
+      ${itensEsperadosHtml}` : ''}
+    ${itensList.length ? `
+      <div class="secao-label" style="margin-top:14px">Carregado — resumo</div>
+      ${resumoHtml}
+      <div class="secao-label" style="margin-top:14px">Bags carregados</div>
+      ${bagsHtml}` : '<p class="vazio" style="margin-top:12px">Nenhum bag conferido registrado.</p>'}
     <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:12px">
       <i class="ti ti-x"></i> Fechar
     </button>`;
@@ -4310,7 +4341,7 @@ body.tema-claro{
     </button>
 
     <!-- Formulário (oculto por padrão se já houver OCs) -->
-    <div id="formNovaOC" style="margin-top:12px">
+    <div id="formNovaOC" style="margin-top:12px;display:none">
       <div class="secao">
         <div class="secao-titulo"><i class="ti ti-truck"></i> Nova ordem</div>
         <div class="campo">
