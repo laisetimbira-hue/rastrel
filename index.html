@@ -805,10 +805,10 @@ async function carregarOCsAguardando() {
             onclick="${emConf ? `retormarConferencia('${oc.id}')` : `iniciarConferencia('${oc.id}')`}">
             <i class="ti ti-${emConf?'player-play':'truck'}"></i> ${emConf ? 'Retomar' : 'Iniciar'}
           </button>
-          ${!emConf ? `<button class="btn btn-verm" style="padding:6px 14px;font-size:13px"
+          <button class="btn btn-verm" style="padding:6px 14px;font-size:13px"
             onclick="cancelarOC('${oc.id}','${oc.numero_pedido}')">
             <i class="ti ti-trash"></i> Cancelar
-          </button>` : ''}
+          </button>
         </div>
       </div>
     </div>`;
@@ -878,11 +878,24 @@ async function iniciarConferencia(ocId) {
 }
 
 async function cancelarOC(ocId, numero) {
-  if(!confirm('Cancelar a OC ' + numero + '?')) return;
-  await db.collection('pedidos_carga').doc(ocId).update({ status: 'cancelado' });
-  flash('OC ' + numero + ' cancelada', 'ok');
-  carregarOCsAguardando();
-  carregarHistoricoExpedicoes();
+  if(!confirm('Cancelar a OC ' + numero + '?\n\nEsta ação não pode ser desfeita.')) return;
+  try {
+    await db.collection('pedidos_carga').doc(ocId).update({ status: 'cancelado' });
+    // Se era a OC ativa em conferência, limpar o estado local
+    if(pedidoAtivo && pedidoAtivo.id === ocId) {
+      pedidoAtivo=null; cargaLidos=[]; cargaDivs=[]; itensOC=[];
+      localStorage.removeItem('expedicao_ativa');
+      pararNFCCarga();
+      g('conferenciaPainel').style.display='none';
+      g('pedidoForm').style.display='block';
+      atualizarKpis();
+    }
+    flash('OC ' + numero + ' cancelada', 'ok');
+    carregarOCsAguardando();
+    carregarHistoricoExpedicoes();
+  } catch(e) {
+    flash('Erro ao cancelar: ' + e.message, 'err');
+  }
 }
 
 // ── GESTÃO DOS ITENS ESPERADOS DA OC ──
