@@ -740,12 +740,13 @@ async function criarPedido() {
       placa_veiculo:   g('placa').value.trim(),
       motorista:       g('motorista').value.trim(),
       itens_esperados: itensOC,
+      tsi:             g('ocTSI').value.trim(),
       status:          'aguardando',
       criado_em:       firebase.firestore.FieldValue.serverTimestamp(),
     });
 
     flash('OC ' + num + ' criada — aguardando caminhão', 'ok');
-    ['numPedido','placa','motorista'].forEach(id=>g(id).value='');
+    ['numPedido','placa','motorista','ocTSI'].forEach(id=>g(id).value='');
     itensOC = [];
     renderItensOC();
     _formNovaOCVisivel = false;
@@ -797,6 +798,7 @@ async function carregarOCsAguardando() {
           </div>
           <div class="lote-sub">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
           <div class="lote-sub" style="color:var(--texto3);margin-top:2px">${itensStr}</div>
+          ${oc.tsi ? `<div class="lote-sub" style="color:var(--azul);margin-top:2px"><i class="ti ti-flask"></i> TSI: ${oc.tsi}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
           <button class="btn ${emConf?'btn-azul':'btn-verde'}" style="padding:8px 14px;font-size:14px"
@@ -1295,6 +1297,10 @@ async function abrirHistoricoOC(ocId) {
       <div class="secao-label">Cliente / Placa</div>
       <div style="font-size:14px;color:var(--texto2)">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
     </div>
+    ${oc.tsi ? `<div style="margin-bottom:12px">
+      <div class="secao-label">TSI</div>
+      <div style="font-size:14px;color:var(--azul)">${oc.tsi}</div>
+    </div>` : ''}
     ${itensEsperados ? `<div class="secao-label" style="margin-top:10px">Pedido</div>${itensEsperados}` : ''}
     <div class="secao-label" style="margin-top:14px">Bags conferidos</div>
     ${itensConferidos || '<p class="vazio">Nenhum</p>'}
@@ -4326,6 +4332,10 @@ body.tema-claro{
         <button class="btn btn-cinza" onclick="adicionarItemOC()" style="margin-top:8px">
           <i class="ti ti-plus"></i> Adicionar cultivar
         </button>
+        <div class="campo" style="margin-top:14px">
+          <label>TSI — Tratamento Industrial de Sementes</label>
+          <input id="ocTSI" type="text" placeholder="Ex: Standak Top 200ml/100kg + Fortenza 400ml/100kg"/>
+        </div>
       </div>
 
       <button class="btn btn-verde" onclick="criarPedido()">
