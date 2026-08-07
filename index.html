@@ -9,6 +9,8 @@
 <title>RASTREL</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/dist/tabler-icons.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
@@ -1264,6 +1266,203 @@ async function carregarHistoricoExpedicoes() {
   }).join('');
 }
 
+async function gerarPDFExpedicao(ocId) {
+  if(!db || !window.jspdf) { flash('PDF não disponível — tente novamente em instantes','err'); return; }
+
+  const { jsPDF } = window.jspdf;
+
+  // Buscar dados
+  const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
+  if(!ocDoc.exists) return;
+  const oc = ocDoc.data();
+
+  const itensSnap = await db.collection('pedidos_carga').doc(ocId).collection('itens').get();
+  const itensList = itensSnap.docs.map(d=>d.data())
+    .sort((a,b)=>(a.criado_em?.seconds||0)-(b.criado_em?.seconds||0));
+
+  const agora     = new Date();
+  const dataEmissao = agora.toLocaleDateString('pt-BR');
+  const horaEmissao = agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  const dataOC    = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
+  const horaOC    = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
+
+  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+  const W = 210, margem = 16;
+  let y = margem;
+
+  // ── CABEÇALHO ──
+  doc.setFillColor(31, 107, 66);
+  doc.rect(0, 0, W, 28, 'F');
+
+  doc.setTextColor(255,255,255);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(22);
+  doc.text('RASTREL', margem, 13);
+
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(10);
+  doc.text('Romaneio de Carga — Sistema de Rastreabilidade de Sementes', margem, 21);
+
+  // Data de emissão no canto direito
+  doc.setFontSize(9);
+  doc.text(`Emissão: ${dataEmissao} ${horaEmissao}`, W - margem, 21, {align:'right'});
+
+  y = 36;
+
+  // ── BLOCO DE INFORMAÇÕES ──
+  doc.setTextColor(30,30,30);
+  doc.setFillColor(240, 244, 241);
+  doc.rect(margem, y, W - margem*2, 34, 'F');
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(14);
+  doc.setTextColor(31,107,66);
+  doc.text('OC ' + oc.numero_pedido, margem+4, y+8);
+
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.setTextColor(80,80,80);
+
+  const col1 = margem+4, col2 = W/2;
+  doc.setFont('helvetica','bold'); doc.text('Cliente / Destino:', col1, y+16);
+  doc.setFont('helvetica','normal'); doc.text(oc.placa_veiculo||'—', col1+38, y+16);
+
+  doc.setFont('helvetica','bold'); doc.text('Motorista:', col2, y+16);
+  doc.setFont('helvetica','normal'); doc.text(oc.motorista||'—', col2+24, y+16);
+
+  doc.setFont('helvetica','bold'); doc.text('Data da OC:', col1, y+23);
+  doc.setFont('helvetica','normal'); doc.text(`${dataOC} ${horaOC}`, col1+28, y+23);
+
+  doc.setFont('helvetica','bold'); doc.text('Status:', col2, y+23);
+  doc.setFont('helvetica','normal');
+  const statusTxt = {expedido:'Expedido',divergencia:'Com divergência',cancelado:'Cancelado'}[oc.status]||oc.status||'—';
+  doc.text(statusTxt, col2+18, y+23);
+
+  if(oc.tsi){
+    doc.setFont('helvetica','bold'); doc.text('TSI:', col1, y+30);
+    doc.setFont('helvetica','normal'); doc.setTextColor(180,100,0);
+    doc.text(oc.tsi, col1+12, y+30);
+    doc.setTextColor(80,80,80);
+  }
+
+  y += 42;
+
+  // ── TABELA 1 — PEDIDO ──
+  if(oc.itens_esperados?.length){
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(10);
+    doc.setTextColor(31,107,66);
+    doc.text('PEDIDO — O que foi solicitado', margem, y);
+    y += 4;
+
+    doc.autoTable({
+      startY: y,
+      margin: { left: margem, right: margem },
+      head: [['Cultivar', 'Quantidade solicitada']],
+      body: oc.itens_esperados.map(i => [i.cultivar, `${i.quantidade} bag${i.quantidade>1?'s':''}`]),
+      headStyles: { fillColor:[31,107,66], textColor:255, fontStyle:'bold', fontSize:9 },
+      bodyStyles: { fontSize:9, textColor:[30,30,30] },
+      alternateRowStyles: { fillColor:[240,244,241] },
+      columnStyles: { 1: { halign:'center' } },
+      theme: 'grid',
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  // ── TABELA 2 — CARREGADO ──
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(10);
+  doc.setTextColor(31,107,66);
+  doc.text('CARREGADO — O que foi embarcado', margem, y);
+  y += 4;
+
+  if(itensList.length){
+    doc.autoTable({
+      startY: y,
+      margin: { left: margem, right: margem },
+      head: [['N° Bag', 'Cultivar', 'Lote', 'Status']],
+      body: itensList.map(item => [
+        item.numero_bag||'—',
+        item.cultivar||'—',
+        item.lote||'—',
+        item.status_validacao === 'divergencia' ? 'Divergência' : 'OK',
+      ]),
+      headStyles: { fillColor:[21,76,121], textColor:255, fontStyle:'bold', fontSize:9 },
+      bodyStyles: { fontSize:9, textColor:[30,30,30] },
+      alternateRowStyles: { fillColor:[235,241,248] },
+      columnStyles: {
+        0: { cellWidth:35 },
+        3: { halign:'center', cellWidth:25 },
+      },
+      didParseCell(data) {
+        if(data.column.index === 3 && data.section === 'body'){
+          if(data.cell.raw === 'Divergência'){
+            data.cell.styles.textColor = [220,38,38];
+            data.cell.styles.fontStyle = 'bold';
+          } else {
+            data.cell.styles.textColor = [31,107,66];
+            data.cell.styles.fontStyle = 'bold';
+          }
+        }
+      },
+      theme: 'grid',
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  } else {
+    doc.setFont('helvetica','italic');
+    doc.setFontSize(9);
+    doc.setTextColor(150,150,150);
+    doc.text('Nenhum bag conferido registrado.', margem, y+6);
+    y += 14;
+  }
+
+  // ── RESUMO ──
+  const totalPedido  = (oc.itens_esperados||[]).reduce((s,i)=>s+i.quantidade,0);
+  const totalCarregado = itensList.length;
+  const totalDiv     = itensList.filter(i=>i.status_validacao==='divergencia').length;
+  const totalOK      = totalCarregado - totalDiv;
+
+  doc.setFillColor(240,244,241);
+  doc.rect(margem, y, W-margem*2, 22, 'F');
+  doc.setDrawColor(31,107,66);
+  doc.rect(margem, y, W-margem*2, 22, 'S');
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(9);
+  doc.setTextColor(30,30,30);
+  const cw = (W-margem*2)/4;
+  const resumoItems = [
+    ['Solicitado', `${totalPedido} bags`],
+    ['Carregado',  `${totalCarregado} bags`],
+    ['OK',         `${totalOK} bags`],
+    ['Divergências',`${totalDiv} bags`],
+  ];
+  resumoItems.forEach(([label, val], idx) => {
+    const x = margem + idx*cw + cw/2;
+    doc.setTextColor(100,100,100); doc.setFontSize(8);
+    doc.text(label, x, y+8, {align:'center'});
+    doc.setTextColor(idx===3&&totalDiv>0?[220,38,38]:[31,107,66]);
+    doc.setFontSize(13); doc.setFont('helvetica','bold');
+    doc.text(val, x, y+17, {align:'center'});
+  });
+
+  y += 30;
+
+  // ── RODAPÉ ──
+  const pageH = 297;
+  doc.setTextColor(180,180,180);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(8);
+  doc.text(`Documento gerado pelo sistema RASTREL — ${dataEmissao} ${horaEmissao}`, W/2, pageH-10, {align:'center'});
+  doc.setDrawColor(200,200,200);
+  doc.line(margem, pageH-14, W-margem, pageH-14);
+
+  // Salvar
+  const nomeArq = `RASTREL-${oc.numero_pedido}-${dataOC.replace(/\//g,'-')}.pdf`;
+  doc.output('dataurlnewwindow');
+  doc.save(nomeArq);
+}
+
 async function abrirHistoricoOC(ocId) {
   if(!db) return;
   const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
@@ -1348,7 +1547,10 @@ async function abrirHistoricoOC(ocId) {
       ${resumoHtml}
       <div class="secao-label" style="margin-top:14px">Bags carregados</div>
       ${bagsHtml}` : '<p class="vazio" style="margin-top:12px">Nenhum bag conferido registrado.</p>'}
-    <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:12px">
+    <button class="btn btn-cinza" onclick="gerarPDFExpedicao('${ocId}')" style="margin-top:12px;background:var(--verde-dim);color:var(--verde);border-color:var(--verde)">
+      <i class="ti ti-file-type-pdf"></i> Gerar PDF
+    </button>
+    <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:8px">
       <i class="ti ti-x"></i> Fechar
     </button>`;
 
@@ -2155,13 +2357,13 @@ function renderGrade(elId, posicoes, porPosicao, capacidade=CAPACIDADE_POSICAO, 
           lote: loteKey,
           cultivar_id: b.cultivar_id,
           cultivar_nome: b.cultivar_nome||'—',
+          tratamento: b.tratamento||'',
           qtd_bags: 0,
           bag_id: b.id,
           slot_posicao: b.slot_posicao ?? null,
         };
       }
       lotesMap[loteKey].qtd_bags++;
-      // Usar slot_posicao do primeiro bag que tiver
       if(b.slot_posicao != null && lotesMap[loteKey].slot_posicao == null){
         lotesMap[loteKey].slot_posicao = b.slot_posicao;
       }
@@ -2203,10 +2405,16 @@ function renderGrade(elId, posicoes, porPosicao, capacidade=CAPACIDADE_POSICAO, 
       const cor = corCultivar(lt.cultivar_id);
       const nome = (lt.cultivar_nome||'').split('—')[1]?.trim() ||
                    (lt.cultivar_nome||'').split(' ')[0] || '?';
+      const tsiStr = lt.tratamento
+        ? lt.tratamento.substring(0, 8) + (lt.tratamento.length > 8 ? '…' : '')
+        : '';
       return `<td class="cel-slot cel-ocupada" style="background:${cor}22"
         onclick="event.stopPropagation();abrirSlotLote('${lt.lote}','${pos}',${idx})">
         <div class="cel-cultivar" style="color:${cor}">${nome}</div>
-        <div class="cel-lote">${lt.lote}</div>
+        <div class="cel-lote-tsi">
+          <span class="cel-lote">${lt.lote}</span>
+          ${tsiStr ? `<span class="cel-tsi">${tsiStr}</span>` : ''}
+        </div>
       </td>`;
     };
 
@@ -3256,65 +3464,110 @@ body{
 
 /* ── LAYOUT DESKTOP ── */
 @media (min-width:900px){
-  body{display:flex;flex-direction:column;min-height:100vh}
+  html,body{height:100%;overflow:hidden}
+  body{display:flex;flex-direction:column}
 
-  .header{position:sticky;top:0;z-index:300}
+  .header{flex-shrink:0;height:68px;z-index:300}
+  .hamburger{display:none}
 
-  /* Wrapper principal */
+  /* Layout abaixo do header */
   .main-wrapper{
     display:flex;
     flex:1;
-    max-width:1400px;
+    overflow:hidden;
     width:100%;
-    margin:0 auto;
-    padding:0 24px;
-    gap:0;
   }
 
-  /* Drawer vira sidebar fixa no desktop */
+  /* Sidebar fixa */
   .drawer-overlay{display:none !important}
   .drawer{
-    position:sticky;
-    top:64px;
-    height:calc(100vh - 64px);
+    position:relative;
+    top:0;
+    height:100%;
     transform:none !important;
-    width:220px;
+    width:240px;
     flex-shrink:0;
     border-right:1px solid var(--borda);
     border-radius:0;
     box-shadow:none;
     overflow-y:auto;
     z-index:1;
+    background:var(--bg2);
   }
-  .drawer-header{padding:20px 16px 12px}
-  .drawer-logo{font-size:18px}
-  .hamburger{display:none}
+  .drawer-header{padding:24px 20px 16px}
+  .drawer-logo{font-size:20px}
+  .drawer-item{font-size:14px;padding:13px 14px}
+  .drawer-fechar{display:none}
 
-  /* Conteúdo principal */
+  /* Área de conteúdo — scroll vertical aqui */
   .screen-wrapper{
     flex:1;
-    min-width:0;
-    padding:0 0 0 32px;
+    overflow-y:auto;
+    overflow-x:hidden;
+    height:100%;
+    background:var(--bg);
   }
 
+  /* Telas ocupam toda a largura disponível */
   .screen{
     max-width:100%;
+    width:100%;
     margin:0;
-    padding:24px 0 40px;
+    padding:32px 48px 60px;
+    box-sizing:border-box;
   }
 
-  /* Mapa mais largo no desktop */
-  #screen-mapa .mapa-grade,
-  #screen-mapa .mapa-grade{
-    max-width:100%;
-  }
+  /* Tipografia maior */
+  .pg-titulo{font-size:32px}
+  .pg-sub{font-size:14px;margin-bottom:24px}
 
-  /* KPIs em 6 colunas no desktop */
-  .kpi-row{grid-template-columns:repeat(6,1fr)}
+  /* Seções */
+  .secao{padding:20px 24px;margin-bottom:16px}
 
-  /* Modal mais largo */
-  .modal-box{max-width:600px;border-radius:var(--r);margin:auto}
+  /* KPIs — 6 colunas */
+  .kpi-row{grid-template-columns:repeat(6,1fr);gap:12px}
+  .kpi{padding:20px 12px}
+  .kpi-val{font-size:36px}
+  .kpi-lbl{font-size:12px}
+
+  /* Campos */
+  .campo input,.campo select,.campo textarea,
+  .campo-linha input,.campo-linha select{padding:14px 16px;font-size:15px}
+
+  /* Botões */
+  .btn{font-size:15px;min-height:52px}
+
+  /* Cards */
+  .lote-card{padding:16px 20px;margin-bottom:12px}
+  .lote-num{font-size:19px}
+  .linha-item{padding:14px 0}
+  .item-num{font-size:16px}
+
+  /* Modal */
   .modal-overlay{align-items:center}
+  .modal-box{max-width:680px;border-radius:var(--r);margin:auto;max-height:80vh}
+
+  /* Mapa — sem scroll horizontal, quebra linha */
+  .mapa-grade{
+    flex-wrap:wrap;
+    overflow-x:visible;
+    touch-action:auto;
+    gap:10px;
+  }
+  .posicao-nova{width:calc(10% - 10px);min-width:140px}
+
+  /* Botão NFC */
+  .btn-nfc-grande{width:200px;height:200px}
+
+  /* Pedido bar */
+  .pedido-bar{padding:18px 24px}
+  .pedido-bar-info{font-size:18px}
+}
+
+/* ── TABLET ── */
+@media (min-width:600px) and (max-width:899px){
+  .screen{max-width:100%;padding:20px 24px 40px}
+  .kpi-row{grid-template-columns:repeat(3,1fr)}
 }
 .screen.active{display:block}
 .pg-titulo{
@@ -3697,9 +3950,17 @@ body{
   font-size:10px;font-weight:700;
   display:block;line-height:1.2;
 }
+.cel-lote-tsi{
+  display:flex;align-items:center;gap:4px;margin-top:1px;
+}
 .cel-lote{
   font-size:9px;color:var(--texto3);
-  display:block;margin-top:1px;font-family:'Inter',monospace;
+  font-family:'Inter',monospace;flex-shrink:0;
+}
+.cel-tsi{
+  font-size:9px;color:var(--amarelo);
+  font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 
 /* ── NFC GRANDE ── */
@@ -3889,7 +4150,7 @@ body.tema-claro{
   <div class="drawer-header">
     <div>
       <div class="drawer-logo">RASTREL</div>
-      <div class="drawer-sub">Safra 25/26 · Armazém 3</div>
+      <div class="drawer-sub">Safra 25/26</div>
     </div>
     <button class="drawer-fechar" onclick="fecharDrawer()" aria-label="Fechar menu">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
