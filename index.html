@@ -1267,9 +1267,14 @@ async function carregarHistoricoExpedicoes() {
 }
 
 async function gerarPDFExpedicao(ocId) {
-  if(!db || !window.jspdf) { flash('PDF não disponível — tente novamente em instantes','err'); return; }
+  if(!db){ flash('Firebase não conectado','err'); return; }
 
-  const { jsPDF } = window.jspdf;
+  // jsPDF pode estar em window.jspdf.jsPDF ou window.jsPDF
+  const JsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if(!JsPDF){
+    flash('Biblioteca PDF ainda carregando — tente em instantes','warn');
+    return;
+  }
 
   // Buscar dados
   const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
@@ -1286,7 +1291,7 @@ async function gerarPDFExpedicao(ocId) {
   const dataOC    = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
   const horaOC    = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
 
-  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+  const doc = new JsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
   const W = 210, margem = 16;
   let y = margem;
 
