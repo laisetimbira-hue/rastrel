@@ -4083,7 +4083,59 @@ body{
   letter-spacing:.3px;text-transform:uppercase;margin-bottom:8px;
 }
 
-/* ── CONN DRAWER ── */
+/* ── MODAL POSIÇÃO / OC ── */
+.modal-posicao{
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.5);
+  z-index:900;
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+}
+@media(min-width:600px){
+  .modal-posicao{align-items:center}
+}
+.modal-posicao-inner{
+  background:var(--bg2);
+  border-radius:var(--r) var(--r) 0 0;
+  padding:20px 16px 32px;
+  width:100%;
+  max-width:640px;
+  max-height:85vh;
+  overflow-y:auto;
+  box-shadow:0 -4px 24px rgba(0,0,0,.15);
+}
+@media(min-width:600px){
+  .modal-posicao-inner{
+    border-radius:var(--r);
+    max-height:80vh;
+  }
+}
+.modal-posicao-header{
+  display:flex;align-items:center;
+  justify-content:space-between;
+  margin-bottom:16px;
+}
+.modal-posicao-titulo{
+  font-family:'Montserrat',sans-serif;
+  font-size:20px;font-weight:700;color:var(--texto);
+}
+.modal-fechar{
+  background:var(--bg3);border:none;border-radius:50%;
+  width:34px;height:34px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;color:var(--texto2);cursor:pointer;
+  flex-shrink:0;-webkit-tap-highlight-color:transparent;
+}
+.modal-posicao-kpis{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:8px;margin-bottom:16px;
+}
+.modal-bags-lista{
+  display:flex;flex-direction:column;
+}
+
+
 .drawer-footer .conn{padding:0}
 #connDotDrawer,#connTxtDrawer{display:flex;align-items:center}
 
