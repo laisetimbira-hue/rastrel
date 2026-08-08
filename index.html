@@ -833,6 +833,7 @@ async function retormarConferencia(ocId) {
 
   // Ativar NFC automaticamente
   if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
+  setTimeout(() => ativarAssinaturas(), 300);
 }
 
 async function iniciarConferencia(ocId) {
@@ -871,6 +872,7 @@ async function iniciarConferencia(ocId) {
 
   // Ativar NFC automaticamente
   if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
+  setTimeout(() => ativarAssinaturas(), 300);
 }
 
 async function cancelarOC(ocId, numero) {
@@ -1192,10 +1194,25 @@ async function confirmarExpedicao() {
       atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
 
-    const ocIdParaEmail = pedidoAtivo.id; // salvar antes do cancelarPedido limpar
+    const ocIdParaEmail = pedidoAtivo.id;
+
+    // Capturar assinaturas antes de limpar
+    const assinaturaConferente = getAssinatura('canvasConferente');
+    const assinaturaMotorista  = getAssinatura('canvasMotorista');
+
     flash(cargaLidos.length + ' bags expedidos!', 'ok');
     window.cancelarPedido();
     carregarMapa(true);
+
+    // Salvar assinaturas no documento da OC
+    if(assinaturaConferente || assinaturaMotorista) {
+      try {
+        await db.collection('pedidos_carga').doc(ocIdParaEmail).update({
+          assinatura_conferente: assinaturaConferente || null,
+          assinatura_motorista:  assinaturaMotorista  || null,
+        });
+      } catch(e) { console.warn('Erro ao salvar assinaturas:', e); }
+    }
 
     // Disparar email de notificação automaticamente (em background)
     if(ocIdParaEmail) {
@@ -1458,6 +1475,43 @@ async function gerarPDFExpedicao(ocId) {
       doc.setTextColor(i===3&&totDiv>0?220:31, i===3&&totDiv>0?38:107, i===3&&totDiv>0?38:66);
       doc.text(v,x,y+17,{align:'center'});
     });
+
+    // Buscar assinaturas salvas na OC
+    const ocComAssina = await db.collection('pedidos_carga').doc(ocId).get();
+    const assinaConf = ocComAssina.data()?.assinatura_conferente || null;
+    const assinaMot  = ocComAssina.data()?.assinatura_motorista  || null;
+
+    if(assinaConf || assinaMot) {
+      // Verificar se cabe na página atual, senão nova página
+      if(y > 230) { doc.addPage(); y = 20; }
+
+      doc.setFont('helvetica','bold'); doc.setFontSize(10);
+      doc.setTextColor(31,107,66);
+      doc.text('ASSINATURAS', m, y); y += 6;
+
+      const largAssin = (W - m*2 - 10) / 2;
+
+      if(assinaConf) {
+        doc.addImage(assinaConf, 'PNG', m, y, largAssin, 25);
+        doc.setDrawColor(200,200,200);
+        doc.line(m, y+28, m+largAssin, y+28);
+        doc.setFont('helvetica','normal'); doc.setFontSize(9);
+        doc.setTextColor(80,80,80);
+        doc.text('Conferente', m + largAssin/2, y+33, {align:'center'});
+      }
+
+      if(assinaMot) {
+        const x2 = m + largAssin + 10;
+        doc.addImage(assinaMot, 'PNG', x2, y, largAssin, 25);
+        doc.setDrawColor(200,200,200);
+        doc.line(x2, y+28, x2+largAssin, y+28);
+        doc.setFont('helvetica','normal'); doc.setFontSize(9);
+        doc.setTextColor(80,80,80);
+        doc.text('Motorista', x2 + largAssin/2, y+33, {align:'center'});
+      }
+
+      y += 40;
+    }
 
     // Rodapé
     doc.setTextColor(180,180,180); doc.setFont('helvetica','normal'); doc.setFontSize(8);
@@ -3276,6 +3330,81 @@ function carregarPreferencias() {
   carregarEmailsConfig();
 }
 
+// ── ASSINATURAS ──
+const _assinaturas = {};
+
+function iniciarAssinatura(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#1F6B42';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  let desenhando = false;
+  let ultimoX = 0, ultimoY = 0;
+
+  const getPos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const src = e.touches ? e.touches[0] : e;
+    return {
+      x: (src.clientX - rect.left) * scaleX,
+      y: (src.clientY - rect.top) * scaleY
+    };
+  };
+
+  const iniciar = (e) => {
+    e.preventDefault();
+    desenhando = true;
+    const pos = getPos(e);
+    ultimoX = pos.x; ultimoY = pos.y;
+    ctx.beginPath();
+    ctx.moveTo(ultimoX, ultimoY);
+  };
+  const desenhar = (e) => {
+    e.preventDefault();
+    if(!desenhando) return;
+    const pos = getPos(e);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    ultimoX = pos.x; ultimoY = pos.y;
+  };
+  const parar = () => { desenhando = false; };
+
+  canvas.addEventListener('mousedown',  iniciar);
+  canvas.addEventListener('mousemove',  desenhar);
+  canvas.addEventListener('mouseup',    parar);
+  canvas.addEventListener('mouseleave', parar);
+  canvas.addEventListener('touchstart', iniciar,  { passive:false });
+  canvas.addEventListener('touchmove',  desenhar, { passive:false });
+  canvas.addEventListener('touchend',   parar);
+}
+
+function limparAssinatura(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function getAssinatura(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) return null;
+  // Verificar se tem algo desenhado
+  const ctx = canvas.getContext('2d');
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const temConteudo = data.some((v,i) => i % 4 !== 3 && v > 0);
+  return temConteudo ? canvas.toDataURL('image/png') : null;
+}
+
+function ativarAssinaturas() {
+  iniciarAssinatura('canvasConferente');
+  iniciarAssinatura('canvasMotorista');
+}
+
 // ── EMAILJS ──
 const EMAILJS_SERVICE  = 'service_keh79c3';
 const EMAILJS_TEMPLATE = 'template_p8rnqru';
@@ -4834,6 +4963,31 @@ body.tema-claro{
     <div class="secao">
       <div class="secao-titulo"><i class="ti ti-checks"></i> Bags conferidos</div>
       <div id="cargaLidosList"><p class="vazio">Nenhum bag lido ainda.</p></div>
+    </div>
+
+    <!-- Assinaturas -->
+    <div class="secao" style="margin-top:8px">
+      <div class="secao-titulo"><i class="ti ti-signature"></i> Assinaturas</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--texto2);margin-bottom:6px">Conferente</div>
+          <canvas id="canvasConferente" width="260" height="100"
+            style="border:1px solid var(--borda);border-radius:8px;background:var(--bg2);width:100%;touch-action:none;cursor:crosshair"></canvas>
+          <button class="btn btn-cinza" onclick="limparAssinatura('canvasConferente')"
+            style="margin-top:4px;min-height:36px;font-size:12px">
+            <i class="ti ti-eraser"></i> Limpar
+          </button>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--texto2);margin-bottom:6px">Motorista</div>
+          <canvas id="canvasMotorista" width="260" height="100"
+            style="border:1px solid var(--borda);border-radius:8px;background:var(--bg2);width:100%;touch-action:none;cursor:crosshair"></canvas>
+          <button class="btn btn-cinza" onclick="limparAssinatura('canvasMotorista')"
+            style="margin-top:4px;min-height:36px;font-size:12px">
+            <i class="ti ti-eraser"></i> Limpar
+          </button>
+        </div>
+      </div>
     </div>
 
     <button class="btn btn-verde" onclick="confirmarExpedicao()">
