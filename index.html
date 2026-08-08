@@ -4285,33 +4285,6 @@ body.tema-claro{
     <i class="ti ti-refresh"></i> Atualizar mapa
   </button>
 
-<!-- Modal posição -->
-  <div id="modalPosicao" style="display:none" class="modal-posicao">
-    <div class="modal-posicao-inner">
-      <div class="modal-posicao-header">
-        <div class="modal-posicao-titulo" id="modalTitulo">A3B01</div>
-        <button onclick="fecharModal()" class="modal-fechar"><i class="ti ti-x"></i></button>
-      </div>
-      <div class="modal-posicao-kpis">
-        <div class="kpi">
-          <div class="kpi-val" id="modalTotal" style="color:var(--azul)">0</div>
-          <div class="kpi-lbl">Total</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val" id="modalOcupado" style="color:var(--verde)">0</div>
-          <div class="kpi-lbl">Ocupados</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-val" id="modalLivre" style="color:var(--texto2)">0</div>
-          <div class="kpi-lbl">Livres</div>
-        </div>
-      </div>
-      <div id="modalBags" class="modal-bags-lista"></div>
-      <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:8px">
-        <i class="ti ti-x"></i> Fechar
-      </button>
-    </div>
-  </div>
 </main>
 
 <main class="screen" id="screen-lotes">
@@ -4900,5 +4873,33 @@ body.tema-claro{
 
 </div><!-- /screen-wrapper -->
 </div><!-- /main-wrapper -->
+
+<!-- Modal posição -->
+  <div id="modalPosicao" style="display:none" class="modal-posicao">
+    <div class="modal-posicao-inner">
+      <div class="modal-posicao-header">
+        <div class="modal-posicao-titulo" id="modalTitulo">A3B01</div>
+        <button onclick="fecharModal()" class="modal-fechar"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="modal-posicao-kpis">
+        <div class="kpi">
+          <div class="kpi-val" id="modalTotal" style="color:var(--azul)">0</div>
+          <div class="kpi-lbl">Total</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val" id="modalOcupado" style="color:var(--verde)">0</div>
+          <div class="kpi-lbl">Ocupados</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-val" id="modalLivre" style="color:var(--texto2)">0</div>
+          <div class="kpi-lbl">Livres</div>
+        </div>
+      </div>
+      <div id="modalBags" class="modal-bags-lista"></div>
+      <button class="btn btn-cinza" onclick="fecharModal()" style="margin-top:8px">
+        <i class="ti ti-x"></i> Fechar
+      </button>
+    </div>
+  </div>
 </body>
 </html>
