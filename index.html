@@ -1365,22 +1365,53 @@ async function gerarPDFExpedicao(ocId) {
       y = doc.lastAutoTable.finalY + 8;
     }
 
-    // Tabela carregado
+    // Buscar dados completos dos bags (categoria e peneira)
+    const loteKeys = [...new Set(itensList.map(i=>i.lote).filter(Boolean))];
+    const bagsPorLote = {};
+    for(const lote of loteKeys){
+      const snapB = await db.collection('bags').where('lote','==',lote).limit(1).get();
+      if(!snapB.empty){
+        const b = snapB.docs[0].data();
+        bagsPorLote[lote] = { categoria: b.categoria||'—', peneira: b.peneira||'—' };
+      }
+    }
+
+    // Agrupar por lote
+    const agrupado = {};
+    itensList.forEach(item => {
+      const lote = item.lote||'—';
+      if(!agrupado[lote]) agrupado[lote] = {
+        lote, cultivar: item.cultivar||'—',
+        categoria: bagsPorLote[lote]?.categoria||'—',
+        peneira:   bagsPorLote[lote]?.peneira||'—',
+        ok:0, div:0
+      };
+      if(item.status_validacao==='divergencia') agrupado[lote].div++;
+      else agrupado[lote].ok++;
+    });
+
+    // Tabela carregado — agrupada por lote
     doc.setFont('helvetica','bold'); doc.setFontSize(10);
     doc.setTextColor(21,76,121);
     doc.text('CARREGADO', m, y); y+=4;
-    if(itensList.length){
+
+    const linhasCarregado = Object.values(agrupado).map(lt => [
+      lt.lote, lt.cultivar, lt.categoria, lt.peneira,
+      `${lt.ok+lt.div} bags`,
+      lt.div>0 ? `${lt.ok} OK / ${lt.div} Div.` : `${lt.ok} OK`
+    ]);
+
+    if(linhasCarregado.length){
       doc.autoTable({
         startY:y, margin:{left:m,right:m},
-        head:[['N° Bag','Cultivar','Lote','Status']],
-        body: itensList.map(i=>[i.numero_bag||'—',i.cultivar||'—',i.lote||'—',
-          i.status_validacao==='divergencia'?'Divergência':'OK']),
+        head:[['Lote','Cultivar','Categoria','Peneira','Bags','Status']],
+        body: linhasCarregado,
         headStyles:{fillColor:[21,76,121],textColor:255,fontStyle:'bold',fontSize:9},
         bodyStyles:{fontSize:9}, alternateRowStyles:{fillColor:[235,241,248]},
-        columnStyles:{0:{cellWidth:35},3:{halign:'center',cellWidth:28}},
+        columnStyles:{4:{halign:'center',cellWidth:18},5:{halign:'center',cellWidth:30}},
         didParseCell(d){
-          if(d.column.index===3&&d.section==='body'){
-            d.cell.styles.textColor = d.cell.raw==='Divergência'?[220,38,38]:[31,107,66];
+          if(d.column.index===5&&d.section==='body'){
+            d.cell.styles.textColor = d.cell.raw.includes('Div.')?[220,38,38]:[31,107,66];
             d.cell.styles.fontStyle = 'bold';
           }
         }, theme:'grid',
