@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/dist/tabler-icons.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
@@ -1191,9 +1192,30 @@ async function confirmarExpedicao() {
       atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
     });
 
+    const ocIdParaEmail = pedidoAtivo.id; // salvar antes do cancelarPedido limpar
     flash(cargaLidos.length + ' bags expedidos!', 'ok');
     window.cancelarPedido();
-    carregarMapa(true); // forçar servidor para remover bags expedidos do mapa
+    carregarMapa(true);
+
+    // Disparar email de notificação automaticamente (em background)
+    if(ocIdParaEmail) {
+      setTimeout(async () => {
+        try {
+          const ocDoc = await db.collection('pedidos_carga').doc(ocIdParaEmail).get();
+          if(!ocDoc.exists) return;
+          const ocData = ocDoc.data();
+          const itensSnap = await db.collection('pedidos_carga').doc(ocIdParaEmail).collection('itens').get();
+          const itensList = itensSnap.docs.map(d=>d.data());
+          const loteKeys = [...new Set(itensList.map(i=>i.lote).filter(Boolean))];
+          const bagsPorLote = {};
+          for(const lote of loteKeys){
+            const snapB = await db.collection('bags').where('lote','==',lote).limit(1).get();
+            if(!snapB.empty){ const b=snapB.docs[0].data(); bagsPorLote[lote]={categoria:b.categoria||'—',peneira:b.peneira||'—'}; }
+          }
+          await enviarEmailExpedicao(ocData, itensList, bagsPorLote);
+        } catch(e){ console.warn('Erro no envio de email:', e); }
+      }, 1500);
+    }
 
   } catch(e) {
     flash('Erro ao confirmar expedição: ' + e.message, 'err');
@@ -3241,25 +3263,112 @@ function aplicarFonte() {
 // ── CARREGAR PREFERÊNCIAS ──
 function carregarPreferencias() {
   const tema = localStorage.getItem('tema');
-  if (tema === 'claro') {
+  if(tema === 'claro'){
     document.body.classList.add('tema-claro');
-    const btn = g('btnTema');
-    if (btn) btn.textContent = '☀️';
+    const btn = document.getElementById('btnTema'); if(btn) btn.textContent = '☀️';
   }
   const fi = localStorage.getItem('fonteIdx');
-  if (fi !== null) {
-    fonteIdx = parseInt(fi);
-    aplicarFonte();
-  }
-  // Carregar OCs aguardando após Firebase conectar
-  if (typeof carregarOCsAguardando === 'function') carregarOCsAguardando();
+  if(fi !== null){ fonteIdx = parseInt(fi); aplicarFonte(); }
+  if(typeof carregarOCsAguardando === 'function') carregarOCsAguardando();
+  const telaVincular = document.getElementById('screen-vincular');
+  if(telaVincular && telaVincular.classList.contains('active')) carregarBagsPendentes('__manual__');
+  inicializarEmailJS();
+  carregarEmailsConfig();
+}
 
-  // Se a aba Vincular estiver aberta, carregar lista de bags pendentes agora
-  const telaVincular = g('screen-vincular');
-  if (telaVincular && telaVincular.classList.contains('active')) {
-    carregarBagsPendentes('__manual__');
+// ── EMAILJS ──
+const EMAILJS_SERVICE  = 'service_keh79c3';
+const EMAILJS_TEMPLATE = 'template_p8rnqru';
+const EMAILJS_KEY      = 'Xl_HHHJP6fxbYZHLL';
+
+function inicializarEmailJS() {
+  if(window.emailjs) {
+    emailjs.init({ publicKey: EMAILJS_KEY });
   }
 }
+
+function salvarEmails() {
+  const e1 = g('cfgEmail1').value.trim();
+  const e2 = g('cfgEmail2').value.trim();
+  localStorage.setItem('notif_email1', e1);
+  localStorage.setItem('notif_email2', e2);
+  flash('Emails salvos!', 'ok');
+}
+
+function carregarEmailsConfig() {
+  const e1 = localStorage.getItem('notif_email1') || '';
+  const e2 = localStorage.getItem('notif_email2') || '';
+  const el1 = g('cfgEmail1'); if(el1) el1.value = e1;
+  const el2 = g('cfgEmail2'); if(el2) el2.value = e2;
+}
+
+async function enviarEmailExpedicao(oc, itensList, bagsPorLote) {
+  if(!window.emailjs) { console.warn('EmailJS não carregado'); return; }
+
+  const emails = [
+    localStorage.getItem('notif_email1')||'',
+    localStorage.getItem('notif_email2')||'',
+  ].filter(e => e.includes('@'));
+
+  if(!emails.length) return; // Sem emails cadastrados, silencioso
+
+  const dataOC  = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
+  const totCar  = itensList.length;
+  const totDiv  = itensList.filter(i=>i.status_validacao==='divergencia').length;
+
+  // Montar resumo dos lotes
+  const agrupado = {};
+  itensList.forEach(item => {
+    const lote = item.lote||'—';
+    if(!agrupado[lote]) agrupado[lote] = {
+      lote, cultivar: item.cultivar||'—',
+      categoria: bagsPorLote[lote]?.categoria||'—',
+      peneira:   bagsPorLote[lote]?.peneira||'—',
+      ok:0, div:0
+    };
+    if(item.status_validacao==='divergencia') agrupado[lote].div++;
+    else agrupado[lote].ok++;
+  });
+
+  const tabelaHtml = `
+    <table border="1" cellpadding="6" cellspacing="0"
+      style="border-collapse:collapse;font-size:13px;width:100%;font-family:Arial,sans-serif">
+      <tr style="background:#1F6B42;color:#fff">
+        <th>Lote</th><th>Cultivar</th><th>Categoria</th><th>Peneira</th><th>Bags</th><th>Status</th>
+      </tr>
+      ${Object.values(agrupado).map(lt=>`
+        <tr>
+          <td>${lt.lote}</td><td>${lt.cultivar}</td>
+          <td>${lt.categoria}</td><td>${lt.peneira}</td>
+          <td style="text-align:center">${lt.ok+lt.div}</td>
+          <td style="text-align:center;color:${lt.div>0?'#dc2626':'#1F6B42'};font-weight:bold">
+            ${lt.div>0?`${lt.ok} OK / ${lt.div} Div.`:`${lt.ok} OK`}
+          </td>
+        </tr>`).join('')}
+    </table>`;
+
+  // Enviar para cada email
+  for(const email of emails){
+    try {
+      await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+        email1:      email,
+        numero_oc:   oc.numero_pedido||'—',
+        data:        dataOC,
+        cliente:     oc.placa_veiculo||'—',
+        motorista:   oc.motorista||'—',
+        total_bags:  totCar,
+        divergencias: totDiv,
+        tabela_lotes: tabelaHtml,
+        tsi:         oc.tsi||'—',
+        status:      totDiv>0?'Com divergências':'OK',
+      });
+      console.log('Email enviado para:', email);
+    } catch(e) {
+      console.error('Erro ao enviar email para', email, e);
+    }
+  }
+}
+
 
 function g(id){ return document.getElementById(id); }
 
@@ -4888,6 +4997,25 @@ body.tema-claro{
       <div class="info-caixa-titulo">💡 Dica</div>
       <div class="info-caixa-texto">Sempre toque no campo EPC antes de usar o leitor para garantir que o foco está correto.</div>
     </div>
+  </div>
+
+  <!-- Emails de notificação -->
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-mail"></i> Emails de notificação</div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:14px;line-height:1.5">
+      Ao confirmar uma expedição, o romaneio será enviado automaticamente para estes emails.
+    </p>
+    <div class="campo">
+      <label>Email 1</label>
+      <input id="cfgEmail1" type="email" placeholder="Ex: logistica@empresa.com.br"/>
+    </div>
+    <div class="campo">
+      <label>Email 2</label>
+      <input id="cfgEmail2" type="email" placeholder="Ex: gerencia@empresa.com.br"/>
+    </div>
+    <button class="btn btn-verde" onclick="salvarEmails()">
+      <i class="ti ti-check"></i> Salvar emails
+    </button>
   </div>
 
   <div class="secao" style="border-color:rgba(248,113,113,.25)">
