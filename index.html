@@ -309,6 +309,14 @@ function setStatus(ok,txt) {
 function showBanner(v){ g('banner').style.display=v?'flex':'none'; }
 
 
+function toggleCredencial(inputId, btn) {
+  const input = g(inputId);
+  if(!input) return;
+  const mostrar = input.type === 'password';
+  input.type = mostrar ? 'text' : 'password';
+  btn.innerHTML = mostrar ? '<i class="ti ti-eye-off"></i>' : '<i class="ti ti-eye"></i>';
+}
+
 function salvarConfig() {
   const k=g('cfgApiKey').value.trim(), p=g('cfgProjectId').value.trim();
   if(!k||!p){ flash('Preencha API Key e Project ID','err'); return; }
@@ -5103,11 +5111,27 @@ body.tema-claro{
     </p>
     <div class="campo">
       <label>API Key</label>
-      <input id="cfgApiKey" type="text" placeholder="AIzaSy..." style="font-family:'IBM Plex Mono',monospace;font-size:12px"/>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="cfgApiKey" type="password" placeholder="AIzaSy..."
+          style="font-family:'IBM Plex Mono',monospace;font-size:12px;flex:1"/>
+        <button type="button" onclick="toggleCredencial('cfgApiKey',this)"
+          style="background:none;border:1px solid var(--borda);border-radius:8px;
+          padding:8px 10px;cursor:pointer;color:var(--texto3);flex-shrink:0">
+          <i class="ti ti-eye"></i>
+        </button>
+      </div>
     </div>
     <div class="campo">
       <label>Project ID</label>
-      <input id="cfgProjectId" type="text" placeholder="meu-projeto-12345" style="font-family:'IBM Plex Mono',monospace;font-size:12px"/>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="cfgProjectId" type="password" placeholder="meu-projeto-12345"
+          style="font-family:'IBM Plex Mono',monospace;font-size:12px;flex:1"/>
+        <button type="button" onclick="toggleCredencial('cfgProjectId',this)"
+          style="background:none;border:1px solid var(--borda);border-radius:8px;
+          padding:8px 10px;cursor:pointer;color:var(--texto3);flex-shrink:0">
+          <i class="ti ti-eye"></i>
+        </button>
+      </div>
     </div>
     <button class="btn btn-azul" onclick="salvarConfig()">
       <i class="ti ti-device-floppy"></i> Salvar e conectar
