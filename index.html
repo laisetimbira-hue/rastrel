@@ -1269,205 +1269,157 @@ async function carregarHistoricoExpedicoes() {
 async function gerarPDFExpedicao(ocId) {
   if(!db){ flash('Firebase não conectado','err'); return; }
 
-  // jsPDF pode estar em window.jspdf.jsPDF ou window.jsPDF
-  const JsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
-  if(!JsPDF){
-    flash('Biblioteca PDF ainda carregando — tente em instantes','warn');
+  flash('Gerando PDF...', 'ok');
+
+  // Carregar jsPDF dinamicamente se ainda não estiver disponível
+  const carregarScript = (src) => new Promise((resolve, reject) => {
+    if(document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+
+  try {
+    await carregarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    await carregarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+  } catch(e) {
+    flash('Erro ao carregar biblioteca PDF — verifique sua conexão','err');
     return;
   }
 
-  // Buscar dados
-  const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
-  if(!ocDoc.exists) return;
-  const oc = ocDoc.data();
+  const JsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if(!JsPDF){ flash('Biblioteca PDF não disponível','err'); return; }
 
-  const itensSnap = await db.collection('pedidos_carga').doc(ocId).collection('itens').get();
-  const itensList = itensSnap.docs.map(d=>d.data())
-    .sort((a,b)=>(a.criado_em?.seconds||0)-(b.criado_em?.seconds||0));
+  try {
+    const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
+    if(!ocDoc.exists){ flash('OC não encontrada','err'); return; }
+    const oc = ocDoc.data();
 
-  const agora     = new Date();
-  const dataEmissao = agora.toLocaleDateString('pt-BR');
-  const horaEmissao = agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-  const dataOC    = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
-  const horaOC    = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
+    const itensSnap = await db.collection('pedidos_carga').doc(ocId).collection('itens').get();
+    const itensList = itensSnap.docs.map(d=>d.data())
+      .sort((a,b)=>(a.criado_em?.seconds||0)-(b.criado_em?.seconds||0));
 
-  const doc = new JsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
-  const W = 210, margem = 16;
-  let y = margem;
+    const agora = new Date();
+    const dataEmissao = agora.toLocaleDateString('pt-BR');
+    const horaEmissao = agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    const dataOC = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleDateString('pt-BR') : '—';
+    const horaOC = oc.criado_em?.toDate ? oc.criado_em.toDate().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
 
-  // ── CABEÇALHO ──
-  doc.setFillColor(31, 107, 66);
-  doc.rect(0, 0, W, 28, 'F');
+    const doc = new JsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+    const W = 210, m = 16;
+    let y = m;
 
-  doc.setTextColor(255,255,255);
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(22);
-  doc.text('RASTREL', margem, 13);
-
-  doc.setFont('helvetica','normal');
-  doc.setFontSize(10);
-  doc.text('Romaneio de Carga — Sistema de Rastreabilidade de Sementes', margem, 21);
-
-  // Data de emissão no canto direito
-  doc.setFontSize(9);
-  doc.text(`Emissão: ${dataEmissao} ${horaEmissao}`, W - margem, 21, {align:'right'});
-
-  y = 36;
-
-  // ── BLOCO DE INFORMAÇÕES ──
-  doc.setTextColor(30,30,30);
-  doc.setFillColor(240, 244, 241);
-  doc.rect(margem, y, W - margem*2, 34, 'F');
-
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(14);
-  doc.setTextColor(31,107,66);
-  doc.text('OC ' + oc.numero_pedido, margem+4, y+8);
-
-  doc.setFont('helvetica','normal');
-  doc.setFontSize(9);
-  doc.setTextColor(80,80,80);
-
-  const col1 = margem+4, col2 = W/2;
-  doc.setFont('helvetica','bold'); doc.text('Cliente / Destino:', col1, y+16);
-  doc.setFont('helvetica','normal'); doc.text(oc.placa_veiculo||'—', col1+38, y+16);
-
-  doc.setFont('helvetica','bold'); doc.text('Motorista:', col2, y+16);
-  doc.setFont('helvetica','normal'); doc.text(oc.motorista||'—', col2+24, y+16);
-
-  doc.setFont('helvetica','bold'); doc.text('Data da OC:', col1, y+23);
-  doc.setFont('helvetica','normal'); doc.text(`${dataOC} ${horaOC}`, col1+28, y+23);
-
-  doc.setFont('helvetica','bold'); doc.text('Status:', col2, y+23);
-  doc.setFont('helvetica','normal');
-  const statusTxt = {expedido:'Expedido',divergencia:'Com divergência',cancelado:'Cancelado'}[oc.status]||oc.status||'—';
-  doc.text(statusTxt, col2+18, y+23);
-
-  if(oc.tsi){
-    doc.setFont('helvetica','bold'); doc.text('TSI:', col1, y+30);
-    doc.setFont('helvetica','normal'); doc.setTextColor(180,100,0);
-    doc.text(oc.tsi, col1+12, y+30);
-    doc.setTextColor(80,80,80);
-  }
-
-  y += 42;
-
-  // ── TABELA 1 — PEDIDO ──
-  if(oc.itens_esperados?.length){
-    doc.setFont('helvetica','bold');
-    doc.setFontSize(10);
-    doc.setTextColor(31,107,66);
-    doc.text('PEDIDO — O que foi solicitado', margem, y);
-    y += 4;
-
-    doc.autoTable({
-      startY: y,
-      margin: { left: margem, right: margem },
-      head: [['Cultivar', 'Quantidade solicitada']],
-      body: oc.itens_esperados.map(i => [i.cultivar, `${i.quantidade} bag${i.quantidade>1?'s':''}`]),
-      headStyles: { fillColor:[31,107,66], textColor:255, fontStyle:'bold', fontSize:9 },
-      bodyStyles: { fontSize:9, textColor:[30,30,30] },
-      alternateRowStyles: { fillColor:[240,244,241] },
-      columnStyles: { 1: { halign:'center' } },
-      theme: 'grid',
-    });
-    y = doc.lastAutoTable.finalY + 8;
-  }
-
-  // ── TABELA 2 — CARREGADO ──
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(10);
-  doc.setTextColor(31,107,66);
-  doc.text('CARREGADO — O que foi embarcado', margem, y);
-  y += 4;
-
-  if(itensList.length){
-    doc.autoTable({
-      startY: y,
-      margin: { left: margem, right: margem },
-      head: [['N° Bag', 'Cultivar', 'Lote', 'Status']],
-      body: itensList.map(item => [
-        item.numero_bag||'—',
-        item.cultivar||'—',
-        item.lote||'—',
-        item.status_validacao === 'divergencia' ? 'Divergência' : 'OK',
-      ]),
-      headStyles: { fillColor:[21,76,121], textColor:255, fontStyle:'bold', fontSize:9 },
-      bodyStyles: { fontSize:9, textColor:[30,30,30] },
-      alternateRowStyles: { fillColor:[235,241,248] },
-      columnStyles: {
-        0: { cellWidth:35 },
-        3: { halign:'center', cellWidth:25 },
-      },
-      didParseCell(data) {
-        if(data.column.index === 3 && data.section === 'body'){
-          if(data.cell.raw === 'Divergência'){
-            data.cell.styles.textColor = [220,38,38];
-            data.cell.styles.fontStyle = 'bold';
-          } else {
-            data.cell.styles.textColor = [31,107,66];
-            data.cell.styles.fontStyle = 'bold';
-          }
-        }
-      },
-      theme: 'grid',
-    });
-    y = doc.lastAutoTable.finalY + 8;
-  } else {
-    doc.setFont('helvetica','italic');
+    // Cabeçalho
+    doc.setFillColor(31,107,66);
+    doc.rect(0,0,W,28,'F');
+    doc.setTextColor(255,255,255);
+    doc.setFont('helvetica','bold'); doc.setFontSize(22);
+    doc.text('RASTREL', m, 13);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    doc.text('Romaneio de Carga', m, 21);
     doc.setFontSize(9);
-    doc.setTextColor(150,150,150);
-    doc.text('Nenhum bag conferido registrado.', margem, y+6);
-    y += 14;
+    doc.text(`Emissão: ${dataEmissao} ${horaEmissao}`, W-m, 21, {align:'right'});
+    y = 36;
+
+    // Bloco informações
+    doc.setFillColor(240,244,241);
+    doc.rect(m, y, W-m*2, oc.tsi?36:28, 'F');
+    doc.setTextColor(31,107,66);
+    doc.setFont('helvetica','bold'); doc.setFontSize(14);
+    doc.text('OC ' + (oc.numero_pedido||'—'), m+4, y+9);
+    doc.setFontSize(9); doc.setTextColor(80,80,80);
+
+    const c1=m+4, c2=W/2+4;
+    doc.setFont('helvetica','bold'); doc.text('Cliente:', c1, y+17);
+    doc.setFont('helvetica','normal'); doc.text(oc.placa_veiculo||'—', c1+18, y+17);
+    doc.setFont('helvetica','bold'); doc.text('Motorista:', c2, y+17);
+    doc.setFont('helvetica','normal'); doc.text(oc.motorista||'—', c2+24, y+17);
+    doc.setFont('helvetica','bold'); doc.text('Data:', c1, y+24);
+    doc.setFont('helvetica','normal'); doc.text(`${dataOC} ${horaOC}`, c1+13, y+24);
+    doc.setFont('helvetica','bold'); doc.text('Status:', c2, y+24);
+    doc.setFont('helvetica','normal');
+    doc.text({expedido:'Expedido',divergencia:'Com divergência',cancelado:'Cancelado'}[oc.status]||'—', c2+18, y+24);
+
+    if(oc.tsi){
+      doc.setFont('helvetica','bold'); doc.text('TSI:', c1, y+31);
+      doc.setFont('helvetica','normal'); doc.setTextColor(180,100,0);
+      doc.text(oc.tsi, c1+12, y+31);
+    }
+    y += (oc.tsi?42:34);
+
+    // Tabela pedido
+    if(oc.itens_esperados?.length){
+      doc.setFont('helvetica','bold'); doc.setFontSize(10);
+      doc.setTextColor(31,107,66);
+      doc.text('PEDIDO', m, y); y+=4;
+      doc.autoTable({
+        startY:y, margin:{left:m,right:m},
+        head:[['Cultivar','Qtd solicitada']],
+        body: oc.itens_esperados.map(i=>[i.cultivar,`${i.quantidade} bag${i.quantidade>1?'s':''}`]),
+        headStyles:{fillColor:[31,107,66],textColor:255,fontStyle:'bold',fontSize:9},
+        bodyStyles:{fontSize:9}, alternateRowStyles:{fillColor:[240,244,241]},
+        columnStyles:{1:{halign:'center'}}, theme:'grid',
+      });
+      y = doc.lastAutoTable.finalY + 8;
+    }
+
+    // Tabela carregado
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.setTextColor(21,76,121);
+    doc.text('CARREGADO', m, y); y+=4;
+    if(itensList.length){
+      doc.autoTable({
+        startY:y, margin:{left:m,right:m},
+        head:[['N° Bag','Cultivar','Lote','Status']],
+        body: itensList.map(i=>[i.numero_bag||'—',i.cultivar||'—',i.lote||'—',
+          i.status_validacao==='divergencia'?'Divergência':'OK']),
+        headStyles:{fillColor:[21,76,121],textColor:255,fontStyle:'bold',fontSize:9},
+        bodyStyles:{fontSize:9}, alternateRowStyles:{fillColor:[235,241,248]},
+        columnStyles:{0:{cellWidth:35},3:{halign:'center',cellWidth:28}},
+        didParseCell(d){
+          if(d.column.index===3&&d.section==='body'){
+            d.cell.styles.textColor = d.cell.raw==='Divergência'?[220,38,38]:[31,107,66];
+            d.cell.styles.fontStyle = 'bold';
+          }
+        }, theme:'grid',
+      });
+      y = doc.lastAutoTable.finalY + 8;
+    }
+
+    // Resumo
+    const totPed = (oc.itens_esperados||[]).reduce((s,i)=>s+i.quantidade,0);
+    const totCar = itensList.length;
+    const totDiv = itensList.filter(i=>i.status_validacao==='divergencia').length;
+    doc.setFillColor(240,244,241);
+    doc.rect(m,y,W-m*2,22,'F');
+    doc.setDrawColor(31,107,66); doc.rect(m,y,W-m*2,22,'S');
+    const cw=(W-m*2)/4;
+    [['Solicitado',`${totPed} bags`],['Carregado',`${totCar} bags`],
+     ['OK',`${totCar-totDiv} bags`],['Divergências',`${totDiv} bags`]].forEach(([l,v],i)=>{
+      const x=m+i*cw+cw/2;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8);
+      doc.setTextColor(100,100,100); doc.text(l,x,y+8,{align:'center'});
+      doc.setFont('helvetica','bold'); doc.setFontSize(13);
+      doc.setTextColor(i===3&&totDiv>0?[220,38,38]:[31,107,66]);
+      doc.text(v,x,y+17,{align:'center'});
+    });
+
+    // Rodapé
+    doc.setTextColor(180,180,180); doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    doc.line(m,287,W-m,287);
+    doc.text(`Documento gerado pelo sistema RASTREL — ${dataEmissao} ${horaEmissao}`, W/2, 292, {align:'center'});
+
+    const nome = `RASTREL-${(oc.numero_pedido||'OC').replace(/\//g,'-')}-${dataOC.replace(/\//g,'-')}.pdf`;
+    doc.save(nome);
+    flash('PDF gerado com sucesso!', 'ok');
+
+  } catch(e) {
+    console.error('Erro PDF:', e);
+    flash('Erro ao gerar PDF: ' + e.message, 'err');
   }
-
-  // ── RESUMO ──
-  const totalPedido  = (oc.itens_esperados||[]).reduce((s,i)=>s+i.quantidade,0);
-  const totalCarregado = itensList.length;
-  const totalDiv     = itensList.filter(i=>i.status_validacao==='divergencia').length;
-  const totalOK      = totalCarregado - totalDiv;
-
-  doc.setFillColor(240,244,241);
-  doc.rect(margem, y, W-margem*2, 22, 'F');
-  doc.setDrawColor(31,107,66);
-  doc.rect(margem, y, W-margem*2, 22, 'S');
-
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(9);
-  doc.setTextColor(30,30,30);
-  const cw = (W-margem*2)/4;
-  const resumoItems = [
-    ['Solicitado', `${totalPedido} bags`],
-    ['Carregado',  `${totalCarregado} bags`],
-    ['OK',         `${totalOK} bags`],
-    ['Divergências',`${totalDiv} bags`],
-  ];
-  resumoItems.forEach(([label, val], idx) => {
-    const x = margem + idx*cw + cw/2;
-    doc.setTextColor(100,100,100); doc.setFontSize(8);
-    doc.text(label, x, y+8, {align:'center'});
-    doc.setTextColor(idx===3&&totalDiv>0?[220,38,38]:[31,107,66]);
-    doc.setFontSize(13); doc.setFont('helvetica','bold');
-    doc.text(val, x, y+17, {align:'center'});
-  });
-
-  y += 30;
-
-  // ── RODAPÉ ──
-  const pageH = 297;
-  doc.setTextColor(180,180,180);
-  doc.setFont('helvetica','normal');
-  doc.setFontSize(8);
-  doc.text(`Documento gerado pelo sistema RASTREL — ${dataEmissao} ${horaEmissao}`, W/2, pageH-10, {align:'center'});
-  doc.setDrawColor(200,200,200);
-  doc.line(margem, pageH-14, W-margem, pageH-14);
-
-  // Salvar
-  const nomeArq = `RASTREL-${oc.numero_pedido}-${dataOC.replace(/\//g,'-')}.pdf`;
-  doc.output('dataurlnewwindow');
-  doc.save(nomeArq);
 }
-
 async function abrirHistoricoOC(ocId) {
   if(!db) return;
   const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
