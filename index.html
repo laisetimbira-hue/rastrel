@@ -465,7 +465,7 @@ function goTab(name) {
   // Atualizar título do header
   const titulo = g('headerTitulo');
   if(titulo) titulo.textContent = TAB_NOMES[name] || name;
-  if(name==='dashboard') carregarDashboard();
+  if(name==='dashboard') { carregarDashboard(); consultarSaldo(); }
   if(name==='saldo')     consultarSaldo();
   if(name==='lotes') carregarLotes();
   if(name==='mapa')  { if(_armazemAtivo==='A3') carregarMapa(); else carregarMapa4(); }
@@ -4553,9 +4553,6 @@ body.tema-claro{
     <div class="drawer-item" id="nav-buscar" onclick="goTab('buscar')">
       <i class="ti ti-search" aria-hidden="true"></i><span>Buscar</span>
     </div>
-    <div class="drawer-item" id="nav-saldo" onclick="goTab('saldo')">
-      <i class="ti ti-scale" aria-hidden="true"></i><span>Saldo</span>
-    </div>
     <div class="drawer-item" id="nav-dashboard" onclick="goTab('dashboard')">
       <i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Estoque</span>
     </div>
@@ -5135,11 +5132,48 @@ body.tema-claro{
 
 <!-- ══ DASHBOARD ══ -->
 <!-- ══ SALDO ══ -->
-<main class="screen" id="screen-saldo">
-  <div class="pg-titulo">Saldo</div>
-  <div class="pg-sub">Consulte o estoque por cultivar, categoria, lote ou tratamento</div>
+<main class="screen" id="screen-dashboard">
+  <div class="pg-titulo">Estoque</div>
+  <div class="pg-sub">Visão geral e consulta de saldo</div>
 
-  <!-- Filtros -->
+  <!-- KPIs principais -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="kpi-val" id="kTotal" style="color:var(--azul)">—</div>
+      <div class="kpi-lbl">Total bags</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="kEstoque" style="color:var(--verde)">—</div>
+      <div class="kpi-lbl">Em estoque</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="kExpedido" style="color:var(--amarelo)">—</div>
+      <div class="kpi-lbl">Expedidos</div>
+    </div>
+  </div>
+  <div class="kpi-row" style="margin-top:0">
+    <div class="kpi">
+      <div class="kpi-val" id="kLotes" style="color:var(--texto)">—</div>
+      <div class="kpi-lbl">Lotes ativos</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="kSemTag" style="color:var(--vermelho)">—</div>
+      <div class="kpi-lbl">Sem tag</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-val" id="kPosicoes" style="color:var(--texto)">—</div>
+      <div class="kpi-lbl">Posições usadas</div>
+    </div>
+  </div>
+
+  <!-- Separador -->
+  <div style="display:flex;align-items:center;gap:10px;margin:8px 0 14px">
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+    <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">CONSULTA DE SALDO</span>
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+  </div>
+
+  <!-- Filtros de saldo -->
   <div class="secao">
     <div class="secao-titulo"><i class="ti ti-filter"></i> Filtros</div>
     <div class="campo-linha">
@@ -5160,13 +5194,11 @@ body.tema-claro{
     <div class="campo-linha">
       <div style="flex:1">
         <label>Lote</label>
-        <input id="saldoLote" type="text" placeholder="Ex: 26S01C"
-          oninput="consultarSaldo()"/>
+        <input id="saldoLote" type="text" placeholder="Ex: 26S01C" oninput="consultarSaldo()"/>
       </div>
       <div style="flex:1">
         <label>Tratamento (TSI)</label>
-        <input id="saldoTSI" type="text" placeholder="Ex: Standak"
-          oninput="consultarSaldo()"/>
+        <input id="saldoTSI" type="text" placeholder="Ex: Standak" oninput="consultarSaldo()"/>
       </div>
     </div>
     <button class="btn btn-cinza" onclick="limparFiltrosSaldo()">
@@ -5174,49 +5206,19 @@ body.tema-claro{
     </button>
   </div>
 
-  <!-- Resultado -->
+  <!-- Resultado saldo -->
   <div id="saldoResultado"><p class="vazio">Carregando...</p></div>
-</main>
 
-<main class="screen" id="screen-dashboard">
-  <div class="pg-titulo">Estoque</div>
-  <div class="pg-sub">Visão geral da operação</div>
-
-  <!-- KPIs principais -->
-  <div class="kpi-row">
-    <div class="kpi">
-      <div class="kpi-val" id="kTotal" style="color:var(--azul)">—</div>
-      <div class="kpi-lbl">Total bags</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-val" id="kEstoque" style="color:var(--verde)">—</div>
-      <div class="kpi-lbl">Em estoque</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-val" id="kExpedido" style="color:var(--amarelo)">—</div>
-      <div class="kpi-lbl">Expedidos</div>
-    </div>
-  </div>
-
-  <!-- KPIs secundários -->
-  <div class="kpi-row" style="margin-top:0">
-    <div class="kpi">
-      <div class="kpi-val" id="kLotes" style="color:var(--texto)">—</div>
-      <div class="kpi-lbl">Lotes ativos</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-val" id="kSemTag" style="color:var(--vermelho)">—</div>
-      <div class="kpi-lbl">Sem tag</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-val" id="kPosicoes" style="color:var(--texto)">—</div>
-      <div class="kpi-lbl">Posições usadas</div>
-    </div>
+  <!-- Separador -->
+  <div style="display:flex;align-items:center;gap:10px;margin:16px 0 14px">
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
+    <span style="font-size:11px;color:var(--texto3);letter-spacing:.5px">DETALHES</span>
+    <div style="flex:1;height:1px;background:var(--borda)"></div>
   </div>
 
   <!-- Por cultivar -->
   <div class="secao">
-    <div class="secao-titulo"><i class="ti ti-plant"></i> Por cultivar</div>
+    <div class="secao-titulo"><i class="ti ti-plant"></i> Por cultivar (em estoque)</div>
     <div id="dashCultivares"><p class="vazio">Carregando...</p></div>
   </div>
 
