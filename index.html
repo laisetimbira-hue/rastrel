@@ -754,12 +754,13 @@ async function criarPedido() {
       motorista:       g('motorista').value.trim(),
       itens_esperados: itensOC,
       tsi:             g('ocTSI').value.trim(),
+      observacao:      g('ocObservacao').value.trim(),
       status:          'aguardando',
       criado_em:       firebase.firestore.FieldValue.serverTimestamp(),
     });
 
     flash('OC ' + num + ' criada — aguardando caminhão', 'ok');
-    ['numPedido','placa','motorista','ocTSI'].forEach(id=>g(id).value='');
+    ['numPedido','placa','motorista','ocTSI','ocObservacao'].forEach(id=>g(id).value='');
     itensOC = [];
     renderItensOC();
     _formNovaOCVisivel = false;
@@ -805,6 +806,7 @@ async function carregarOCsAguardando() {
           <div class="lote-sub">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'}</div>
           <div class="lote-sub" style="color:var(--texto3);margin-top:2px">${itensStr}</div>
           ${oc.tsi ? `<div class="lote-sub" style="color:var(--azul);margin-top:2px"><i class="ti ti-flask"></i> TSI: ${oc.tsi}</div>` : ''}
+          ${oc.observacao ? `<div class="lote-sub" style="color:var(--texto2);margin-top:2px"><i class="ti ti-note"></i> ${oc.observacao}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
           <button class="btn ${emConf?'btn-azul':'btn-verde'}" style="padding:8px 14px;font-size:14px"
@@ -1414,6 +1416,19 @@ async function gerarPDFExpedicao(ocId) {
     }
     y += (oc.tsi?42:34);
 
+    // Observação
+    if(oc.observacao){
+      doc.setFillColor(235,241,248);
+      doc.rect(m, y, W-m*2, 12, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.setTextColor(21,76,121);
+      doc.text('OBSERVAÇÃO:', m+3, y+5);
+      doc.setFont('helvetica','normal'); doc.setTextColor(30,30,30);
+      const obsLines = doc.splitTextToSize(oc.observacao, W-m*2-40);
+      doc.text(obsLines[0], m+38, y+5);
+      y += 16;
+    }
+
     // Tabela pedido
     if(oc.itens_esperados?.length){
       doc.setFont('helvetica','bold'); doc.setFontSize(10);
@@ -1633,6 +1648,10 @@ async function abrirHistoricoOC(ocId) {
       <div class="secao-label">TSI</div>
       <div style="font-size:14px;color:var(--azul)">${oc.tsi}</div>
     </div>` : ''}
+    ${oc.observacao ? `<div style="margin-bottom:12px">
+      <div class="secao-label">Observação</div>
+      <div style="font-size:14px;color:var(--texto2)">${oc.observacao}</div>
+    </div>` : ''}
     ${oc.itens_esperados?.length ? `
       <div class="secao-label" style="margin-top:10px">Pedido</div>
       ${itensEsperadosHtml}` : ''}
@@ -1740,6 +1759,78 @@ async function buscarBag() {
 };
 function dr(k,v){ return `<div class="dr"><span class="dr-k">${k}</span><span class="dr-v">${v}</span></div>`; }
 
+async function carregarComparativo() {
+  if(!db) return;
+  const el = g('comparativoGrafico');
+  if(!el) return;
+
+  const periodo = g('comparativoPeriodo')?.value || 'semana';
+
+  const snap = await db.collection('movimentacoes')
+    .where('tipo_evento','==','saida_expedicao').get();
+
+  const agora = new Date();
+  const dados = {};
+
+  // Montar chaves dos últimos 8 períodos
+  for(let i=7; i>=0; i--){
+    const d = new Date(agora);
+    if(periodo === 'semana'){
+      d.setDate(d.getDate() - i*7);
+      const seg = new Date(d);
+      seg.setDate(seg.getDate() - seg.getDay() + (seg.getDay()===0?-6:1));
+      const key = `${String(seg.getDate()).padStart(2,'0')}/${String(seg.getMonth()+1).padStart(2,'0')}`;
+      dados[key] = 0;
+    } else {
+      d.setMonth(d.getMonth() - i);
+      const key = `${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear().toString().slice(2)}`;
+      dados[key] = 0;
+    }
+  }
+
+  snap.docs.forEach(doc => {
+    const ts = doc.data().criado_em?.toDate?.();
+    if(!ts) return;
+    let key;
+    if(periodo === 'semana'){
+      const seg = new Date(ts);
+      seg.setDate(seg.getDate() - seg.getDay() + (seg.getDay()===0?-6:1));
+      key = `${String(seg.getDate()).padStart(2,'0')}/${String(seg.getMonth()+1).padStart(2,'0')}`;
+    } else {
+      key = `${String(ts.getMonth()+1).padStart(2,'0')}/${ts.getFullYear().toString().slice(2)}`;
+    }
+    if(key in dados) dados[key]++;
+  });
+
+  const entries = Object.entries(dados);
+  const maxVal  = Math.max(...entries.map(([,v])=>v), 1);
+  const W = 100, barW = Math.floor((W - entries.length) / entries.length);
+
+  const bars = entries.map(([label, val], i) => {
+    const h = Math.max(2, Math.round((val / maxVal) * 60));
+    const x = i * (barW + 1);
+    const y = 60 - h;
+    const cor = val === maxVal ? '#1F6B42' : '#A8D5B5';
+    return `
+      <rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="2" fill="${cor}"/>
+      ${val > 0 ? `<text x="${x + barW/2}" y="${y-3}" text-anchor="middle" font-size="5" fill="var(--texto2)">${val}</text>` : ''}
+      <text x="${x + barW/2}" y="72" text-anchor="middle" font-size="4.5" fill="var(--texto3)">${label}</text>`;
+  }).join('');
+
+  const totalPeriodo = entries.reduce((s,[,v])=>s+v,0);
+  const melhor = entries.reduce((a,b)=>b[1]>a[1]?b:a,entries[0]);
+
+  el.innerHTML = `
+    <svg viewBox="0 0 100 76" xmlns="http://www.w3.org/2000/svg" style="width:100%;margin-bottom:8px">
+      <line x1="0" y1="60" x2="100" y2="60" stroke="var(--borda)" stroke-width="0.5"/>
+      ${bars}
+    </svg>
+    <div style="display:flex;gap:16px;font-size:12px;color:var(--texto2)">
+      <span>Total no período: <strong style="color:var(--verde)">${totalPeriodo} bags</strong></span>
+      ${melhor[1]>0?`<span>Melhor: <strong style="color:var(--verde)">${melhor[0]} (${melhor[1]} bags)</strong></span>`:''}
+    </div>`;
+}
+
 async function carregarDashboard() {
   if(!db) return;
   try {
@@ -1843,6 +1934,7 @@ async function carregarDashboard() {
         }).join('');
 
     if(!navigator.onLine) flash('Mostrando último estoque salvo (offline)', 'warn');
+    carregarComparativo();
 
   } catch(e) {
     g('movList').innerHTML = '<p class="vazio">Não foi possível carregar — sem dados localmente ainda.</p>';
@@ -5204,6 +5296,10 @@ body.tema-claro{
           <label>TSI — Tratamento Industrial de Sementes</label>
           <input id="ocTSI" type="text" placeholder="Ex: Standak Top 200ml/100kg + Fortenza 400ml/100kg"/>
         </div>
+        <div class="campo">
+          <label>Observação</label>
+          <input id="ocObservacao" type="text" placeholder="Ex: cliente pediu bags do fundo primeiro, motorista chegou às 14h..."/>
+        </div>
       </div>
 
       <button class="btn btn-verde" onclick="criarPedido()">
@@ -5505,6 +5601,18 @@ body.tema-claro{
   <div class="secao">
     <div class="secao-titulo"><i class="ti ti-history"></i> Últimas movimentações</div>
     <div class="tl-wrap" id="movList"><p class="vazio">Carregando...</p></div>
+  </div>
+
+  <!-- Comparativo de expedição -->
+  <div class="secao">
+    <div class="secao-titulo" style="justify-content:space-between">
+      <span><i class="ti ti-chart-bar"></i> Expedições — comparativo</span>
+      <select id="comparativoPeriodo" onchange="carregarComparativo()" style="font-size:12px;padding:4px 8px;border:1px solid var(--borda);border-radius:8px;background:var(--bg2);color:var(--texto)">
+        <option value="semana">Por semana</option>
+        <option value="mes">Por mês</option>
+      </select>
+    </div>
+    <div id="comparativoGrafico"><p class="vazio">Carregando...</p></div>
   </div>
 
   <button class="btn btn-cinza" onclick="carregarDashboard()">
