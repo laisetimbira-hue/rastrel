@@ -445,7 +445,7 @@ function getCultivarNome(id) {
 
 const TAB_NOMES = {
   mapa:'Mapa', lotes:'Lotes', vincular:'Vincular',
-  expedicao:'Expedição', buscar:'Buscar',
+  expedicao:'Expedição', buscar:'Buscar', saldo:'Saldo',
   dashboard:'Estoque', config:'Config',
   'lote-detalhe':'Detalhe do lote',
 };
@@ -466,6 +466,7 @@ function goTab(name) {
   const titulo = g('headerTitulo');
   if(titulo) titulo.textContent = TAB_NOMES[name] || name;
   if(name==='dashboard') carregarDashboard();
+  if(name==='saldo')     consultarSaldo();
   if(name==='lotes') carregarLotes();
   if(name==='mapa')  { if(_armazemAtivo==='A3') carregarMapa(); else carregarMapa4(); }
   if(name==='mapa4') carregarMapa4();
@@ -3413,6 +3414,97 @@ function ativarAssinaturas() {
   iniciarAssinatura('canvasMotorista');
 }
 
+// ── SALDO ──
+let _saldoTimer = null;
+
+async function consultarSaldo() {
+  clearTimeout(_saldoTimer);
+  _saldoTimer = setTimeout(async () => {
+    if(!db) return;
+    const el = g('saldoResultado');
+    if(!el) return;
+    el.innerHTML = '<p class="vazio">Consultando...</p>';
+
+    const filtCultivar  = (g('saldoCultivar')?.value  || '').trim().toLowerCase();
+    const filtCategoria = (g('saldoCategoria')?.value || '').trim();
+    const filtLote      = (g('saldoLote')?.value      || '').trim().toLowerCase();
+    const filtTSI       = (g('saldoTSI')?.value       || '').trim().toLowerCase();
+
+    const snap = await db.collection('bags')
+      .where('status','in',['em_estoque','aguardando_tag']).get();
+
+    let bags = snap.docs.map(d=>d.data());
+
+    // Aplicar filtros no cliente
+    if(filtCultivar)  bags = bags.filter(b=>(b.cultivar_nome||'').toLowerCase().includes(filtCultivar));
+    if(filtCategoria) bags = bags.filter(b=>(b.categoria||'') === filtCategoria);
+    if(filtLote)      bags = bags.filter(b=>(b.lote||'').toLowerCase().includes(filtLote));
+    if(filtTSI)       bags = bags.filter(b=>(b.tratamento||'').toLowerCase().includes(filtTSI));
+
+    if(!bags.length){
+      el.innerHTML = '<p class="vazio">Nenhum bag encontrado com esses filtros.</p>';
+      return;
+    }
+
+    // Agrupar por cultivar → categoria → lote
+    const grupos = {};
+    bags.forEach(b => {
+      const cult = b.cultivar_nome || '—';
+      const cat  = b.categoria     || '—';
+      const lote = b.lote          || '—';
+      const tsi  = b.tratamento    || '';
+      const key  = `${cult}||${cat}`;
+      if(!grupos[key]) grupos[key] = { cultivar:cult, categoria:cat, lotes:{}, total:0 };
+      if(!grupos[key].lotes[lote]) grupos[key].lotes[lote] = { bags:0, tsi };
+      grupos[key].lotes[lote].bags++;
+      grupos[key].total++;
+    });
+
+    const totalGeral = bags.length;
+
+    el.innerHTML = Object.values(grupos)
+      .sort((a,b) => a.cultivar.localeCompare(b.cultivar))
+      .map(g => {
+        const lotesHtml = Object.entries(g.lotes)
+          .sort((a,b) => a[0].localeCompare(b[0]))
+          .map(([lote, info]) => `
+            <div class="linha-item" style="padding:8px 0">
+              <div>
+                <span class="item-num" style="font-size:14px">${lote}</span>
+                ${info.tsi ? `<span class="item-sub" style="color:var(--amarelo)">${info.tsi}</span>` : ''}
+              </div>
+              <span class="tag tag-verde" style="font-size:13px;font-weight:700">${info.bags} bag${info.bags>1?'s':''}</span>
+            </div>`).join('');
+
+        return `<div class="secao" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div>
+              <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:17px;color:var(--texto)">${g.cultivar}</div>
+              <div style="font-size:12px;color:var(--texto3);margin-top:2px">Categoria ${g.categoria}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:22px;color:var(--verde)">${g.total}</div>
+              <div style="font-size:11px;color:var(--texto3)">bags total</div>
+            </div>
+          </div>
+          <div style="border-top:1px solid var(--borda);padding-top:4px">${lotesHtml}</div>
+        </div>`;
+      }).join('') +
+      `<div style="display:flex;justify-content:space-between;align-items:center;
+        background:var(--verde);color:#fff;border-radius:var(--r);padding:14px 18px;margin-top:4px">
+        <span style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:15px">TOTAL GERAL EM ESTOQUE</span>
+        <span style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:22px">${totalGeral} bags</span>
+      </div>`;
+  }, 300);
+}
+
+function limparFiltrosSaldo() {
+  ['saldoCultivar','saldoCategoria','saldoLote','saldoTSI'].forEach(id => {
+    const el = g(id); if(el) el.value = '';
+  });
+  consultarSaldo();
+}
+
 // ── EMAILJS ──
 const EMAILJS_SERVICE  = 'service_keh79c3';
 const EMAILJS_TEMPLATE = 'template_p8rnqru';
@@ -4461,6 +4553,9 @@ body.tema-claro{
     <div class="drawer-item" id="nav-buscar" onclick="goTab('buscar')">
       <i class="ti ti-search" aria-hidden="true"></i><span>Buscar</span>
     </div>
+    <div class="drawer-item" id="nav-saldo" onclick="goTab('saldo')">
+      <i class="ti ti-scale" aria-hidden="true"></i><span>Saldo</span>
+    </div>
     <div class="drawer-item" id="nav-dashboard" onclick="goTab('dashboard')">
       <i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Estoque</span>
     </div>
@@ -5039,6 +5134,50 @@ body.tema-claro{
 </main>
 
 <!-- ══ DASHBOARD ══ -->
+<!-- ══ SALDO ══ -->
+<main class="screen" id="screen-saldo">
+  <div class="pg-titulo">Saldo</div>
+  <div class="pg-sub">Consulte o estoque por cultivar, categoria, lote ou tratamento</div>
+
+  <!-- Filtros -->
+  <div class="secao">
+    <div class="secao-titulo"><i class="ti ti-filter"></i> Filtros</div>
+    <div class="campo-linha">
+      <div style="flex:2">
+        <label>Cultivar</label>
+        <input id="saldoCultivar" type="text" placeholder="Ex: Zeus" list="listaCultivares"
+          oninput="consultarSaldo()"/>
+      </div>
+      <div style="flex:1">
+        <label>Categoria</label>
+        <select id="saldoCategoria" onchange="consultarSaldo()">
+          <option value="">Todas</option>
+          <option>C1</option><option>C2</option>
+          <option>S1</option><option>S2</option>
+        </select>
+      </div>
+    </div>
+    <div class="campo-linha">
+      <div style="flex:1">
+        <label>Lote</label>
+        <input id="saldoLote" type="text" placeholder="Ex: 26S01C"
+          oninput="consultarSaldo()"/>
+      </div>
+      <div style="flex:1">
+        <label>Tratamento (TSI)</label>
+        <input id="saldoTSI" type="text" placeholder="Ex: Standak"
+          oninput="consultarSaldo()"/>
+      </div>
+    </div>
+    <button class="btn btn-cinza" onclick="limparFiltrosSaldo()">
+      <i class="ti ti-x"></i> Limpar filtros
+    </button>
+  </div>
+
+  <!-- Resultado -->
+  <div id="saldoResultado"><p class="vazio">Carregando...</p></div>
+</main>
+
 <main class="screen" id="screen-dashboard">
   <div class="pg-titulo">Estoque</div>
   <div class="pg-sub">Visão geral da operação</div>
