@@ -840,6 +840,7 @@ async function retormarConferencia(ocId) {
   g('pedidoForm').style.display        = 'none';
   g('conferenciaPainel').style.display = 'block';
   flash('Conferência retomada — ' + oc.numero_pedido, 'ok');
+  iniciarCronometro();
 
   // Ativar NFC automaticamente
   if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
@@ -879,6 +880,8 @@ async function iniciarConferencia(ocId) {
   g('conferenciaPainel').style.display = 'block';
   g('epcCarga').focus();
   flash('Conferência iniciada — ' + oc.numero_pedido, 'ok');
+  resetarCronometro();
+  iniciarCronometro();
 
   // Ativar NFC automaticamente
   if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
@@ -1205,23 +1208,27 @@ async function confirmarExpedicao() {
     });
 
     const ocIdParaEmail = pedidoAtivo.id;
+    const tempoCarregamento = getCronoFormatado();
 
     // Capturar assinaturas antes de limpar
     const assinaturaConferente = getAssinatura('canvasConferente');
     const assinaturaMotorista  = getAssinatura('canvasMotorista');
 
     flash(cargaLidos.length + ' bags expedidos!', 'ok');
+    pausarCronometro();
     window.cancelarPedido();
     carregarMapa(true);
 
-    // Salvar assinaturas no documento da OC
-    if(assinaturaConferente || assinaturaMotorista) {
+    // Salvar assinaturas e tempo no documento da OC
+    const dadosExtras = {};
+    if(assinaturaConferente) dadosExtras.assinatura_conferente = assinaturaConferente;
+    if(assinaturaMotorista)  dadosExtras.assinatura_motorista  = assinaturaMotorista;
+    if(tempoCarregamento)    dadosExtras.tempo_carregamento    = tempoCarregamento;
+
+    if(Object.keys(dadosExtras).length) {
       try {
-        await db.collection('pedidos_carga').doc(ocIdParaEmail).update({
-          assinatura_conferente: assinaturaConferente || null,
-          assinatura_motorista:  assinaturaMotorista  || null,
-        });
-      } catch(e) { console.warn('Erro ao salvar assinaturas:', e); }
+        await db.collection('pedidos_carga').doc(ocIdParaEmail).update(dadosExtras);
+      } catch(e) { console.warn('Erro ao salvar extras:', e); }
     }
 
     // Disparar email de notificação automaticamente (em background)
@@ -1253,6 +1260,7 @@ async function confirmarExpedicao() {
 
 function pausarConferencia() {
   pararNFCCarga();
+  pausarCronometro();
   g('conferenciaPainel').style.display = 'none';
   g('pedidoForm').style.display        = 'block';
   flash('Conferência pausada — retome quando quiser na aba Expedição', 'ok');
@@ -1266,6 +1274,7 @@ function cancelarConferencia() {
 
 function cancelarPedido() {
   pararNFCCarga();
+  resetarCronometro();
   _ultimoEpcCarga   = null;
   _ultimoEpcCargaTs = 0;
   pedidoAtivo=null; cargaLidos=[]; cargaDivs=[]; itensOC=[];
@@ -1390,6 +1399,13 @@ async function gerarPDFExpedicao(ocId) {
     doc.setFont('helvetica','bold'); doc.text('Status:', c2, y+24);
     doc.setFont('helvetica','normal');
     doc.text({expedido:'Expedido',divergencia:'Com divergência',cancelado:'Cancelado'}[oc.status]||'—', c2+18, y+24);
+
+    if(oc.tempo_carregamento){
+      doc.setFont('helvetica','bold'); doc.text('Tempo de carregamento:', c1, y+31);
+      doc.setFont('helvetica','normal'); doc.setTextColor(31,107,66);
+      doc.text(oc.tempo_carregamento, c1+56, y+31);
+      doc.setTextColor(80,80,80);
+    }
 
     if(oc.tsi){
       doc.setFont('helvetica','bold'); doc.text('TSI:', c1, y+31);
@@ -1609,6 +1625,10 @@ async function abrirHistoricoOC(ocId) {
       <div class="secao-label">Cliente · Placa · Data</div>
       <div style="font-size:14px;color:var(--texto2)">${oc.placa_veiculo||'—'} · ${oc.motorista||'—'} · ${data} ${hora}</div>
     </div>
+    ${oc.tempo_carregamento ? `<div style="margin-bottom:12px">
+      <div class="secao-label">Tempo de carregamento</div>
+      <div style="font-size:16px;color:var(--verde);font-weight:700;font-family:'Montserrat',sans-serif">⏱ ${oc.tempo_carregamento}</div>
+    </div>` : ''}
     ${oc.tsi ? `<div style="margin-bottom:12px">
       <div class="secao-label">TSI</div>
       <div style="font-size:14px;color:var(--azul)">${oc.tsi}</div>
@@ -3642,6 +3662,58 @@ function limparFiltrosSaldo() {
   consultarSaldo();
 }
 
+// ── CRONÔMETRO ──
+let _cronoInicio  = null;
+let _cronoOffset  = 0; // segundos acumulados de sessões anteriores (pausas)
+let _cronoTimer   = null;
+
+function iniciarCronometro() {
+  _cronoInicio = Date.now();
+  _cronoTimer  = setInterval(_atualizarCronometro, 1000);
+  _atualizarCronometro();
+}
+
+function pausarCronometro() {
+  if(_cronoInicio) {
+    _cronoOffset += Math.floor((Date.now() - _cronoInicio) / 1000);
+    _cronoInicio = null;
+  }
+  clearInterval(_cronoTimer);
+  _cronoTimer = null;
+}
+
+function resetarCronometro() {
+  clearInterval(_cronoTimer);
+  _cronoTimer  = null;
+  _cronoInicio = null;
+  _cronoOffset = 0;
+  const el = g('cronometroDisplay');
+  if(el) el.textContent = '00:00';
+}
+
+function _atualizarCronometro() {
+  const el = g('cronometroDisplay');
+  if(!el) return;
+  const total = _cronoOffset + (_cronoInicio ? Math.floor((Date.now() - _cronoInicio) / 1000) : 0);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  el.textContent = h > 0
+    ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function getCronoFormatado() {
+  const total = _cronoOffset + (_cronoInicio ? Math.floor((Date.now() - _cronoInicio) / 1000) : 0);
+  if(total === 0) return null;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if(h > 0) return `${h}h ${m}min`;
+  if(m > 0) return `${m}min ${s}s`;
+  return `${s}s`;
+}
+
 // ── EMAILJS ──
 const EMAILJS_SERVICE  = 'service_keh79c3';
 const EMAILJS_TEMPLATE = 'template_p8rnqru';
@@ -5150,7 +5222,12 @@ body.tema-claro{
         <div class="pedido-bar-info" id="pedidoInfo">—</div>
         <div class="pedido-bar-sub">Conferência em andamento</div>
       </div>
-      <span class="tag tag-azul">Ativo</span>
+      <div style="text-align:right">
+        <span class="tag tag-azul">Ativo</span>
+        <div id="cronometroDisplay" style="font-family:'Montserrat',sans-serif;font-weight:700;
+          font-size:20px;color:var(--verde);margin-top:4px;letter-spacing:1px">00:00</div>
+        <div style="font-size:10px;color:var(--texto3);letter-spacing:.3px">TEMPO</div>
+      </div>
     </div>
 
     <div class="secao">
