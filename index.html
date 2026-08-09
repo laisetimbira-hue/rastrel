@@ -465,8 +465,8 @@ function goTab(name) {
   // Atualizar título do header
   const titulo = g('headerTitulo');
   if(titulo) titulo.textContent = TAB_NOMES[name] || name;
-  if(name==='dashboard') { carregarDashboard(); consultarSaldo(); }
-  if(name==='extrato')   consultarExtrato();
+  if(name==='dashboard') { carregarDashboard(); consultarSaldo(); carregarTSIs(); }
+  if(name==='extrato')   { consultarExtrato(); carregarTSIs(); }
   if(name==='saldo')     consultarSaldo();
   if(name==='lotes') carregarLotes();
   if(name==='mapa')  { if(_armazemAtivo==='A3') carregarMapa(); else carregarMapa4(); }
@@ -3415,6 +3415,28 @@ function ativarAssinaturas() {
   iniciarAssinatura('canvasMotorista');
 }
 
+async function carregarTSIs() {
+  if(!db) return;
+  const snap = await db.collection('bags')
+    .where('status','in',['em_estoque','aguardando_tag','expedido'])
+    .get();
+
+  const tsis = new Set();
+  snap.docs.forEach(d => {
+    const t = (d.data().tratamento||'').trim();
+    if(t) tsis.add(t);
+  });
+
+  const sorted = [...tsis].sort();
+  const opts = '<option value="">Todos</option>' +
+    sorted.map(t => `<option value="${t}">${t}</option>`).join('');
+
+  ['saldoTSI','extTSI'].forEach(id => {
+    const el = g(id);
+    if(el) el.innerHTML = opts;
+  });
+}
+
 // ── EXTRATO ──
 let _extratoTimer = null;
 
@@ -3428,6 +3450,7 @@ async function consultarExtrato() {
     const filtCultivar = (g('extCultivar')?.value || '').trim().toLowerCase();
     const filtLote     = (g('extLote')?.value     || '').trim().toLowerCase();
     const filtTipo     = (g('extTipo')?.value      || '').trim();
+    const filtTSI      = (g('extTSI')?.value       || '').trim();
     const filtIni      = g('extDataIni')?.value || '';
     const filtFim      = g('extDataFim')?.value || '';
 
@@ -3451,11 +3474,14 @@ async function consultarExtrato() {
     if(filtIni)      movs = movs.filter(m => { const ts = m.criado_em?.seconds; return ts && ts >= new Date(filtIni).getTime()/1000; });
     if(filtFim)      movs = movs.filter(m => { const ts = m.criado_em?.seconds; return ts && ts <= (new Date(filtFim).getTime()/1000 + 86399); });
 
-    // Se filtro de cultivar, buscar bags para cruzar
+    // Se filtro de cultivar ou TSI, buscar bags para cruzar
     let bagIds = null;
-    if(filtCultivar) {
-      const bSnap = await db.collection('bags').where('cultivar_nome','>=',filtCultivar.toUpperCase()).limit(200).get();
-      const bags2 = bSnap.docs.filter(d => (d.data().cultivar_nome||'').toLowerCase().includes(filtCultivar));
+    if(filtCultivar || filtTSI) {
+      let bQuery = db.collection('bags');
+      if(filtTSI) bQuery = bQuery.where('tratamento','==',filtTSI);
+      const bSnap = await bQuery.limit(500).get();
+      let bags2 = bSnap.docs;
+      if(filtCultivar) bags2 = bags2.filter(d => (d.data().cultivar_nome||'').toLowerCase().includes(filtCultivar));
       bagIds = new Set(bags2.map(d => d.id));
       movs = movs.filter(m => bagIds.has(m.bag_id));
     }
@@ -3519,7 +3545,7 @@ async function consultarExtrato() {
 }
 
 function limparFiltrosExtrato() {
-  ['extCultivar','extLote','extTipo','extDataIni','extDataFim'].forEach(id => {
+  ['extCultivar','extLote','extTipo','extTSI','extDataIni','extDataFim'].forEach(id => {
     const el = g(id); if(el) el.value = '';
   });
   g('extratoResultado').innerHTML = '<p class="vazio">Use os filtros acima para consultar o extrato.</p>';
@@ -3539,7 +3565,7 @@ async function consultarSaldo() {
     const filtCultivar  = (g('saldoCultivar')?.value  || '').trim().toLowerCase();
     const filtCategoria = (g('saldoCategoria')?.value || '').trim();
     const filtLote      = (g('saldoLote')?.value      || '').trim().toLowerCase();
-    const filtTSI       = (g('saldoTSI')?.value       || '').trim().toLowerCase();
+    const filtTSI       = (g('saldoTSI')?.value       || '').trim();
 
     const snap = await db.collection('bags')
       .where('status','in',['em_estoque','aguardando_tag']).get();
@@ -3550,7 +3576,7 @@ async function consultarSaldo() {
     if(filtCultivar)  bags = bags.filter(b=>(b.cultivar_nome||'').toLowerCase().includes(filtCultivar));
     if(filtCategoria) bags = bags.filter(b=>(b.categoria||'') === filtCategoria);
     if(filtLote)      bags = bags.filter(b=>(b.lote||'').toLowerCase().includes(filtLote));
-    if(filtTSI)       bags = bags.filter(b=>(b.tratamento||'').toLowerCase().includes(filtTSI));
+    if(filtTSI)       bags = bags.filter(b=>(b.tratamento||'') === filtTSI);
 
     if(!bags.length){
       el.innerHTML = '<p class="vazio">Nenhum bag encontrado com esses filtros.</p>';
@@ -5278,6 +5304,12 @@ body.tema-claro{
         </select>
       </div>
       <div style="flex:1">
+        <label>Tratamento (TSI)</label>
+        <select id="extTSI" onchange="consultarExtrato()">
+          <option value="">Todos</option>
+        </select>
+      </div>
+      <div style="flex:1">
         <label>Data inicial</label>
         <input id="extDataIni" type="date" onchange="consultarExtrato()"/>
       </div>
@@ -5360,7 +5392,9 @@ body.tema-claro{
       </div>
       <div style="flex:1">
         <label>Tratamento (TSI)</label>
-        <input id="saldoTSI" type="text" placeholder="Ex: Standak" oninput="consultarSaldo()"/>
+        <select id="saldoTSI" onchange="consultarSaldo()">
+          <option value="">Todos</option>
+        </select>
       </div>
     </div>
     <button class="btn btn-cinza" onclick="limparFiltrosSaldo()">
