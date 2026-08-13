@@ -1960,10 +1960,6 @@ async function criarLote() {
   const btn = g('btn-criar-lote') || document.querySelector('[onclick="criarLote()"]');
 
   try {
-    // Verificar se lote já existe
-    const existe = await db.collection('bags').where('lote','==',numero).limit(1).get();
-    if(!existe.empty){ flash('Lote '+numero+' já cadastrado','warn'); return; }
-
     if(btn){ btn.disabled=true; btn.textContent='Criando...'; }
 
     const cultivarNome = getCultivarNome(cultivar);
