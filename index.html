@@ -648,37 +648,51 @@ function clearField(id) {
   el.focus();
 };
 
-async function vincularBagAo(bagId, numeroBag) {
+
+// ── FUNÇÃO CENTRAL DE VINCULAÇÃO ──
+async function vincularTagAoBag(bagId, numeroBag, lote) {
+  if(!_epcLido || !_epcLido.trim()) {
+    flash('Nenhuma tag NFC foi lida. Aproxime uma tag física antes de vincular o bag.', 'err');
+    return;
+  }
   if (_vinculandoEmProgresso) return;
   _vinculandoEmProgresso = true;
 
-  if(!db){ _vinculandoEmProgresso = false; return; }
+  if(!db){ _vinculandoEmProgresso = false; flash('Firebase não conectado','err'); return; }
 
   const op  = localStorage.getItem('operador')    || 'Operador';
   const dev = localStorage.getItem('dispositivo') || 'App';
-  const epcFinal = _epcLido || ('URL-' + numeroBag);
+  const epcFinal = _epcLido.trim().toUpperCase();
 
   try {
-    // Usar transação para garantir unicidade do EPC mesmo com concorrência
     await db.runTransaction(async (tx) => {
+      const epcRef = db.collection('epcs').doc(epcFinal);
       const bagRef = db.collection('bags').doc(bagId);
-      const bagSnap = await tx.get(bagRef);
 
+      const epcSnap = await tx.get(epcRef);
+      if(epcSnap.exists) {
+        const dono = epcSnap.data();
+        throw new Error(`Tag já vinculada. EPC ${epcFinal} pertence ao bag ${dono.numero_bag}. Uma tag não pode ser reutilizada no RASTREL.`);
+      }
+
+      const bagSnap = await tx.get(bagRef);
       if(!bagSnap.exists) throw new Error('Bag não encontrado');
       const bagData = bagSnap.data();
 
       if(bagData.status !== 'aguardando_tag')
         throw new Error(numeroBag + ' já foi vinculado');
       if(bagData.epc)
-        throw new Error(numeroBag + ' já tem tag');
+        throw new Error(numeroBag + ' já tem tag — ' + bagData.epc);
 
-      // Verificar unicidade do EPC dentro da transação
-      const epcSnap = await db.collection('bags').where('epc','==',epcFinal).limit(1).get();
-      if(!epcSnap.empty) {
-        const dono = epcSnap.docs[0].data();
-        throw new Error(`Tag já vinculada. EPC ${epcFinal} pertence ao bag ${dono.numero_bag}. Uma tag não pode ser reutilizada no RASTREL.`);
-      }
+      // Criar registro de unicidade do EPC
+      tx.set(epcRef, {
+        epc: epcFinal,
+        bag_id: bagId,
+        numero_bag: numeroBag,
+        vinculado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      });
 
+      // Atualizar bag
       tx.update(bagRef, {
         epc: epcFinal,
         status: 'em_estoque',
@@ -686,6 +700,7 @@ async function vincularBagAo(bagId, numeroBag) {
       });
     });
 
+    // Movimentação fora da transação (não é crítica para unicidade)
     await db.collection('movimentacoes').add({
       bag_id: bagId, numero_bag: numeroBag,
       tipo_evento: 'vinculacao',
@@ -700,8 +715,6 @@ async function vincularBagAo(bagId, numeroBag) {
 
     await carregarBagsPendentes('__manual__');
 
-    const bagData2 = (await db.collection('bags').doc(bagId).get()).data();
-    const lote = bagData2?.lote || '';
     if(lote){
       const snapPend = await db.collection('bags')
         .where('lote','==',lote)
@@ -718,6 +731,12 @@ async function vincularBagAo(bagId, numeroBag) {
   } finally {
     _vinculandoEmProgresso = false;
   }
+}
+
+async function vincularBagAo(bagId, numeroBag) {
+  // Delega para a função central de vinculação
+  const bagData = (await db.collection('bags').doc(bagId).get()).data();
+  await vincularTagAoBag(bagId, numeroBag, bagData?.lote || '');
 }
 
 function limparVincular() {
@@ -1060,16 +1079,33 @@ async function registrarBagNaCarga(epc) {
 
   if(!navigator.onLine) adicionarNaFila('Conferência — ' + bag.numero_bag);
 
+  // 3C: usar bagDoc.id como ID do item — garante unicidade mesmo com dois celulares
+  const itemRef = db.collection('pedidos_carga').doc(pedidoAtivo.id)
+                    .collection('itens').doc(bagDoc.id);
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const itemSnap = await tx.get(itemRef);
+      if(itemSnap.exists){
+        throw new Error(bag.numero_bag + ' já foi conferido nesta OC.');
+      }
+      tx.set(itemRef, {
+        bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc,
+        cultivar: bag.cultivar_nome||'—',
+        lote: bag.lote||'—',
+        status_validacao: statusValidacao,
+        criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+  } catch(txErr) {
+    flash(txErr.message || 'Bag já conferido nesta OC', 'warn');
+    return;
+  }
+
+  // Movimentação só após item garantido
   await addDoc(collection(db,'movimentacoes'),{
     bag_id:bagDoc.id, numero_bag:bag.numero_bag, tipo_evento:'conferencia_carga',
     observacao:`Carga — pedido ${pedidoAtivo.numero}`, operador:op, dispositivo:dev,
-    criado_em:serverTimestamp(),
-  });
-  await db.collection('pedidos_carga').doc(pedidoAtivo.id).collection('itens').add({
-    bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc,
-    cultivar: bag.cultivar_nome||'—',
-    lote: bag.lote||'—',
-    status_validacao: statusValidacao,
     criado_em:serverTimestamp(),
   });
 
@@ -1106,7 +1142,12 @@ async function registrarBagNaCarga_peloNumero(numeroBag) {
   }
   const bagDoc = snap.docs[0];
   const bag    = bagDoc.data();
-  const epc    = bag.epc || ('URL-' + numeroBag);
+  const epc    = bag.epc;
+
+  if(!epc){
+    flash(numeroBag + ' ainda não tem tag física vinculada — vincule uma tag antes de conferir', 'err');
+    return;
+  }
 
   const itens = pedidoAtivo?.itens || [];
   const cultivarBag = (bag.cultivar_nome||'').toLowerCase();
@@ -1124,16 +1165,33 @@ async function registrarBagNaCarga_peloNumero(numeroBag) {
     statusValidacao = 'divergencia';
   }
 
+  // 3C: usar bagDoc.id como ID do item — garante unicidade mesmo com dois celulares
+  const itemRef2 = db.collection('pedidos_carga').doc(pedidoAtivo.id)
+                     .collection('itens').doc(bagDoc.id);
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const itemSnap = await tx.get(itemRef2);
+      if(itemSnap.exists){
+        throw new Error(bag.numero_bag + ' já foi conferido nesta OC.');
+      }
+      tx.set(itemRef2, {
+        bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc,
+        cultivar: bag.cultivar_nome||'—',
+        lote: bag.lote||'—',
+        status_validacao: statusValidacao,
+        criado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+  } catch(txErr) {
+    flash(txErr.message || 'Bag já conferido nesta OC', 'warn');
+    return;
+  }
+
+  // Movimentação só após item garantido
   await addDoc(collection(db,'movimentacoes'),{
     bag_id:bagDoc.id, numero_bag:bag.numero_bag, tipo_evento:'conferencia_carga',
     observacao:`Carga via NFC — pedido ${pedidoAtivo.numero}`, operador:op, dispositivo:dev,
-    criado_em:serverTimestamp(),
-  });
-  await db.collection('pedidos_carga').doc(pedidoAtivo.id).collection('itens').add({
-    bag_id:bagDoc.id, numero_bag:bag.numero_bag, epc,
-    cultivar: bag.cultivar_nome||'—',
-    lote: bag.lote||'—',
-    status_validacao: statusValidacao,
     criado_em:serverTimestamp(),
   });
 
@@ -3251,25 +3309,47 @@ async function lerNovaTag() {
       _substNFCAtivo = false;
       const novoEpc = serialNumber.replace(/:/g,'').toUpperCase();
 
-      // Verificar se nova tag já está em uso (qualquer status)
-      const snap = await db.collection('bags').where('epc','==',novoEpc).limit(1).get();
-      if(!snap.empty){
-        const dono = snap.docs[0].data();
+      // Verificar unicidade via coleção epcs (inclui tags de bags expedidos)
+      const epcCheckPre = await db.collection('epcs').doc(novoEpc).get();
+      if(epcCheckPre.exists){
+        const dono = epcCheckPre.data();
         flash(`Tag já vinculada. EPC ${novoEpc} pertence ao bag ${dono.numero_bag}. Uma tag não pode ser reutilizada no RASTREL.`, 'err');
         if(status) status.innerHTML = `<span style="color:var(--vermelho)">Tag já pertence ao bag <strong>${dono.numero_bag}</strong> — use uma tag nova.</span>`;
         _substNFCAtivo = true;
         return;
       }
 
-      // Substituir no Firebase com transação para evitar concorrência
+      // Substituir no Firebase com transação — disputa pelo documento epcs/{novoEpc}
       await db.runTransaction(async (tx) => {
-        const bagRef = db.collection('bags').doc(_substBagId);
-        // Verificar novamente dentro da transação
-        const epcCheck = await db.collection('bags').where('epc','==',novoEpc).limit(1).get();
-        if(!epcCheck.empty) {
-          const dono = epcCheck.docs[0].data();
+        const novoEpcRef   = db.collection('epcs').doc(novoEpc);
+        const antigoEpcRef = db.collection('epcs').doc(_substEpcAntigo);
+        const bagRef       = db.collection('bags').doc(_substBagId);
+
+        const epcSnap = await tx.get(novoEpcRef);
+        if(epcSnap.exists) {
+          const dono = epcSnap.data();
           throw new Error(`Tag já vinculada ao bag ${dono.numero_bag}.`);
         }
+
+        // Criar registro do novo EPC
+        tx.set(novoEpcRef, {
+          epc: novoEpc,
+          bag_id: _substBagId,
+          numero_bag: _substBagNum,
+          vinculado_em: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+        // Marcar EPC antigo como substituído (permanece bloqueado)
+        tx.set(antigoEpcRef, {
+          epc: _substEpcAntigo,
+          bag_id: _substBagId,
+          numero_bag: _substBagNum,
+          status: 'substituido',
+          substituido_por: novoEpc,
+          substituido_em: firebase.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+
+        // Atualizar bag
         tx.update(bagRef, {
           epc:          novoEpc,
           epc_anterior: _substEpcAntigo,
@@ -3413,82 +3493,11 @@ function mostrarPainelConfirmacaoNFC(bag) {
 let _vinculandoEmProgresso = false;
 
 async function confirmarVinculacaoNFC(bagId, numeroBag, lote) {
-  if (_vinculandoEmProgresso) return;
-  _vinculandoEmProgresso = true;
-
   const btn = g('btnConfirmarVinculo');
   if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Verificando...'; }
-
-  if (!db) {
-    flash('Firebase não conectado','err');
-    _vinculandoEmProgresso = false;
-    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Confirmar vinculação'; }
-    return;
-  }
-
-  const epcFinal = _epcLido || ('URL-' + numeroBag);
-  const op  = localStorage.getItem('operador')    || 'Operador';
-  const dev = localStorage.getItem('dispositivo') || 'App';
-
-  try {
-    const snap = await db.collection('bags').doc(bagId).get();
-    if (!snap.exists) {
-      flash('Bag não encontrado','err');
-      cancelarConfirmacaoNFC();
-      return;
-    }
-
-    const bagData = snap.data();
-
-    // Bloqueio 1 — bag já tem status diferente de aguardando_tag
-    if (bagData.status !== 'aguardando_tag') {
-      flash('⚠️ ' + numeroBag + ' já foi vinculado — desvincule antes de trocar a tag', 'err');
-      cancelarConfirmacaoNFC();
-      return;
-    }
-
-    // Bloqueio 2 — bag já tem EPC gravado (proteção extra contra sobrescrita)
-    if (bagData.epc) {
-      flash('⚠️ ' + numeroBag + ' já tem a tag ' + bagData.epc + ' — desvincule primeiro', 'err');
-      cancelarConfirmacaoNFC();
-      return;
-    }
-
-    await db.collection('bags').doc(bagId).update({
-      epc: epcFinal,
-      status: 'em_estoque',
-      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-
-    await db.collection('movimentacoes').add({
-      bag_id: bagId, numero_bag: numeroBag,
-      tipo_evento: 'vinculacao',
-      local_destino: bagData.localizacao_atual || '',
-      observacao: `Tag NFC vinculada — ${epcFinal}`,
-      operador: op, dispositivo: dev,
-      criado_em: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-
-    _epcLido = null;
-    flash('✓ ' + numeroBag + ' — tag vinculada!', 'ok');
-    cancelarConfirmacaoNFC();
-
-    await carregarBagsPendentes('__manual__');
-
-    if (lote) {
-      const snapPend = await db.collection('bags')
-        .where('lote','==', lote)
-        .where('status','==','aguardando_tag').get();
-      if (snapPend.empty) {
-        flash('✅ Lote ' + lote + ' completo!', 'ok');
-      }
-    }
-  } catch(e) {
-    flash('Erro ao vincular: ' + e.message, 'err');
-    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Confirmar vinculação'; }
-  } finally {
-    _vinculandoEmProgresso = false;
-  }
+  await vincularTagAoBag(bagId, numeroBag, lote);
+  if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Confirmar vinculação'; }
+  cancelarConfirmacaoNFC();
 }
 
 function cancelarConfirmacaoNFC() {
