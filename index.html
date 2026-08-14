@@ -1151,10 +1151,66 @@ async function registrarBagNaCarga_peloNumero(numeroBag) {
   flash('✓ ' + bag.numero_bag + ' · ' + (bag.cultivar_nome||'') + ' · ' + (bag.lote||''), 'ok');
 }
 
+function validarConclusaoConferencia() {
+  const itens = pedidoAtivo?.itens || [];
+  const totalEsperado = itens.reduce((s,i) => s + (i.quantidade||0), 0);
+
+  // Bags válidos (status !== divergencia)
+  const lidosOK = cargaLidos.filter(b => b.status !== 'divergencia');
+
+  // Por cultivar — mesma lógica de correspondência de renderProgressoCultivares
+  const porCultivar = itens.map(item => {
+    const lidosItem = lidosOK.filter(b =>
+      b.cultivar.toLowerCase().includes(item.cultivar.toLowerCase()) ||
+      item.cultivar.toLowerCase().includes(b.cultivar.toLowerCase().split(' ')[0])
+    );
+    const conferido = lidosItem.length;
+    const esperado  = item.quantidade || 0;
+    return {
+      cultivar:  item.cultivar,
+      esperado,
+      conferido,
+      faltando:  Math.max(0, esperado - conferido),
+      excedente: Math.max(0, conferido - esperado),
+    };
+  });
+
+  const totalConferido = lidosOK.length;
+  const faltando   = porCultivar.filter(c => c.faltando > 0);
+  const excedentes = porCultivar.filter(c => c.excedente > 0);
+  const temDivs    = cargaDivs.length > 0;
+
+  const podeFinalizar =
+    totalConferido === totalEsperado &&
+    faltando.length  === 0 &&
+    excedentes.length === 0 &&
+    !temDivs;
+
+  return { podeFinalizar, totalEsperado, totalConferido,
+           porCultivar, faltando, excedentes, temDivs,
+           divergencias: cargaDivs.length };
+}
+
 function atualizarKpis(){
   g('kLidos').textContent = cargaLidos.length;
   g('kOk').textContent    = cargaLidos.filter(b=>b.status!=='divergencia').length;
   g('kDiv').textContent   = cargaDivs.length;
+
+  // Atualizar estado visual do botão confirmar
+  const btn = g('btnConfirmarExpedicao');
+  if(!btn || !pedidoAtivo) return;
+  const v = validarConclusaoConferencia();
+  if(v.podeFinalizar) {
+    btn.style.opacity    = '1';
+    btn.style.cursor     = 'pointer';
+    btn.style.background = 'var(--verde)';
+    btn.innerHTML = '<i class="ti ti-check"></i> ✓ Carga completa — Confirmar expedição';
+  } else {
+    btn.style.opacity    = '0.5';
+    btn.style.cursor     = 'not-allowed';
+    btn.style.background = '';
+    btn.innerHTML = '<i class="ti ti-truck"></i> Confirmar expedição';
+  }
 }
 
 function renderProgressoCultivares() {
@@ -1215,6 +1271,28 @@ function renderDivs(){
 }
 async function confirmarExpedicao() {
   if(!pedidoAtivo||!cargaLidos.length){ flash('Nenhum bag lido','err'); return; }
+
+  // Validação centralizada — impede expedição incompleta
+  const v = validarConclusaoConferencia();
+  if(!v.podeFinalizar) {
+    let msg = '❌ Não é possível finalizar a expedição.\n\n';
+    msg += `Esperado: ${v.totalEsperado} bags\n`;
+    msg += `Conferidos corretamente: ${v.totalConferido} bags`;
+    if(v.faltando.length) {
+      msg += '\n\nFaltam:';
+      v.faltando.forEach(c => { msg += `\n• ${c.cultivar}: ${c.faltando} bag${c.faltando>1?'s':''}`; });
+    }
+    if(v.excedentes.length) {
+      msg += '\n\nEm excesso:';
+      v.excedentes.forEach(c => { msg += `\n• ${c.cultivar}: ${c.excedente} bag${c.excedente>1?'s':''} a mais`; });
+    }
+    if(v.temDivs) {
+      msg += `\n\n⚠️ Existem ${v.divergencias} divergência${v.divergencias>1?'s':''} na carga.\nResolva as divergências antes de finalizar.`;
+    }
+    alert(msg);
+    return;
+  }
+
   const avisoOffline = !navigator.onLine
     ? '\n\n⚠️ Você está OFFLINE. A expedição será salva e enviada quando a internet voltar.'
     : '';
@@ -5607,7 +5685,7 @@ body.tema-claro{
       </div>
     </div>
 
-    <button class="btn btn-verde" onclick="confirmarExpedicao()">
+    <button id="btnConfirmarExpedicao" class="btn btn-verde" onclick="confirmarExpedicao()">
       <i class="ti ti-check"></i> Confirmar expedição
     </button>
     <button class="btn btn-cinza" onclick="pausarConferencia()">
