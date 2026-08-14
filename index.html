@@ -564,11 +564,8 @@ function onEpcInput(val) {
     const snapEpc = await db.collection('bags').where('epc','==',epc).get();
     if(!snapEpc.empty){
       const bagExiste = snapEpc.docs[0].data();
-      // Tag de bag expedido está livre para reutilização
-      if(bagExiste.status !== 'expedido'){
-        if(st) st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
-        return;
-      }
+      if(st) st.innerHTML = `<span style="color:var(--vermelho)"><i class="ti ti-lock"></i> Tag já vinculada.<br><strong>EPC ${epc}</strong> pertence ao bag <strong>${bagExiste.numero_bag}</strong>.<br>Uma tag não pode ser reutilizada no RASTREL.</span>`;
+      return;
     }
     if(st) st.innerHTML = '<span class="ok-text"><i class="ti ti-check"></i> Tag livre — selecione o bag abaixo</span>';
     await carregarBagsPendentes(epc);
@@ -662,34 +659,36 @@ async function vincularBagAo(bagId, numeroBag) {
   const epcFinal = _epcLido || ('URL-' + numeroBag);
 
   try {
-    const snap = await db.collection('bags').doc(bagId).get();
-    if(!snap.exists){
-      flash('Bag não encontrado','err');
-      return;
-    }
-    const bagData = snap.data();
+    // Usar transação para garantir unicidade do EPC mesmo com concorrência
+    await db.runTransaction(async (tx) => {
+      const bagRef = db.collection('bags').doc(bagId);
+      const bagSnap = await tx.get(bagRef);
 
-    if(bagData.status !== 'aguardando_tag'){
-      flash('⚠️ ' + numeroBag + ' já foi vinculado','warn');
-      await carregarBagsPendentes('__manual__');
-      return;
-    }
-    if(bagData.epc){
-      flash('⚠️ ' + numeroBag + ' já tem tag — desvincule primeiro','err');
-      await carregarBagsPendentes('__manual__');
-      return;
-    }
+      if(!bagSnap.exists) throw new Error('Bag não encontrado');
+      const bagData = bagSnap.data();
 
-    await db.collection('bags').doc(bagId).update({
-      epc: epcFinal,
-      status: 'em_estoque',
-      atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      if(bagData.status !== 'aguardando_tag')
+        throw new Error(numeroBag + ' já foi vinculado');
+      if(bagData.epc)
+        throw new Error(numeroBag + ' já tem tag');
+
+      // Verificar unicidade do EPC dentro da transação
+      const epcSnap = await db.collection('bags').where('epc','==',epcFinal).limit(1).get();
+      if(!epcSnap.empty) {
+        const dono = epcSnap.docs[0].data();
+        throw new Error(`Tag já vinculada. EPC ${epcFinal} pertence ao bag ${dono.numero_bag}. Uma tag não pode ser reutilizada no RASTREL.`);
+      }
+
+      tx.update(bagRef, {
+        epc: epcFinal,
+        status: 'em_estoque',
+        atualizado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      });
     });
 
     await db.collection('movimentacoes').add({
       bag_id: bagId, numero_bag: numeroBag,
       tipo_evento: 'vinculacao',
-      local_destino: bagData.localizacao_atual || '',
       observacao: `Tag NFC vinculada — ${epcFinal}`,
       operador: op, dispositivo: dev,
       criado_em: firebase.firestore.FieldValue.serverTimestamp(),
@@ -699,10 +698,10 @@ async function vincularBagAo(bagId, numeroBag) {
     _epcLido = null;
     flash('✓ ' + numeroBag + ' — vinculado!', 'ok');
 
-    // Recarregar lista e reativar NFC para próxima tag
     await carregarBagsPendentes('__manual__');
 
-    const lote = bagData.lote || '';
+    const bagData2 = (await db.collection('bags').doc(bagId).get()).data();
+    const lote = bagData2?.lote || '';
     if(lote){
       const snapPend = await db.collection('bags')
         .where('lote','==',lote)
@@ -710,13 +709,12 @@ async function vincularBagAo(bagId, numeroBag) {
       if(snapPend.empty){
         flash('✅ Lote ' + lote + ' completo!', 'ok');
       } else {
-        // Reativar NFC automaticamente para o próximo bag
         setTimeout(() => { if(!nfcAtivo) lerNFC(); }, 500);
       }
     }
 
   } catch(e) {
-    flash('Erro ao vincular: ' + e.message, 'err');
+    flash(e.message || 'Erro ao vincular', 'err');
   } finally {
     _vinculandoEmProgresso = false;
   }
@@ -3253,19 +3251,29 @@ async function lerNovaTag() {
       _substNFCAtivo = false;
       const novoEpc = serialNumber.replace(/:/g,'').toUpperCase();
 
-      // Verificar se nova tag já está em uso
+      // Verificar se nova tag já está em uso (qualquer status)
       const snap = await db.collection('bags').where('epc','==',novoEpc).limit(1).get();
       if(!snap.empty){
-        flash('Essa tag já está vinculada a outro bag!','err');
-        if(status) status.innerHTML = '<span style="color:var(--vermelho)">Tag já em uso — tente outra.</span>';
+        const dono = snap.docs[0].data();
+        flash(`Tag já vinculada. EPC ${novoEpc} pertence ao bag ${dono.numero_bag}. Uma tag não pode ser reutilizada no RASTREL.`, 'err');
+        if(status) status.innerHTML = `<span style="color:var(--vermelho)">Tag já pertence ao bag <strong>${dono.numero_bag}</strong> — use uma tag nova.</span>`;
         _substNFCAtivo = true;
         return;
       }
 
-      // Substituir no Firebase
-      await db.collection('bags').doc(_substBagId).update({
-        epc:          novoEpc,
-        epc_anterior: _substEpcAntigo,
+      // Substituir no Firebase com transação para evitar concorrência
+      await db.runTransaction(async (tx) => {
+        const bagRef = db.collection('bags').doc(_substBagId);
+        // Verificar novamente dentro da transação
+        const epcCheck = await db.collection('bags').where('epc','==',novoEpc).limit(1).get();
+        if(!epcCheck.empty) {
+          const dono = epcCheck.docs[0].data();
+          throw new Error(`Tag já vinculada ao bag ${dono.numero_bag}.`);
+        }
+        tx.update(bagRef, {
+          epc:          novoEpc,
+          epc_anterior: _substEpcAntigo,
+        });
       });
 
       // Registrar movimentação
@@ -3617,19 +3625,14 @@ async function lerNFC() {
       _epcLido = epc;
       if(st) st.innerHTML = `<span style="color:var(--verde)">✓ Tag lida: <span class="mono">${epc}</span></span>`;
 
-      // Verificar se já está vinculada a bag ativo (não expedido)
+      // Verificar se já está vinculada a qualquer bag (regra definitiva: EPC nunca reutilizado)
       if(db){
         const snapEpc = await db.collection('bags').where('epc','==',epc).get();
         if(!snapEpc.empty){
           const bagExiste = snapEpc.docs[0].data();
-          // Se o bag foi expedido, a tag está disponível para reutilização
-          if(bagExiste.status === 'expedido'){
-            // Tag livre — prosseguir normalmente
-          } else {
-            if(st) st.innerHTML = `<span style="color:var(--vermelho)">⚠️ Tag já vinculada ao bag <strong>${bagExiste.numero_bag}</strong> — desvincule antes de reutilizar</span>`;
-            _epcLido = null;
-            return;
-          }
+          if(st) st.innerHTML = `<span style="color:var(--vermelho)">⚠️ Tag já vinculada.<br><strong>EPC ${epc}</strong> pertence ao bag <strong>${bagExiste.numero_bag}</strong>.<br>Uma tag não pode ser reutilizada no RASTREL.</span>`;
+          _epcLido = null;
+          return;
         }
       }
 
