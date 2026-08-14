@@ -190,6 +190,16 @@ window.addEventListener('DOMContentLoaded', () => {
     if(pedidoAtivo.itens) itensOC = pedidoAtivo.itens;
     atualizarKpis();
     renderProgressoCultivares();
+    // Restaurar bags já conferidos assim que Firebase conectar
+    const _ocIdRestaurar = pedidoAtivo.id;
+    const _aguardarDB = setInterval(async () => {
+      if(db) {
+        clearInterval(_aguardarDB);
+        await restaurarProgressoConferencia(_ocIdRestaurar);
+        if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 400);
+        setTimeout(() => ativarAssinaturas(), 400);
+      }
+    }, 300);
   } else {
     // Formulário de nova OC começa oculto — aparece ao tocar no botão
     _formNovaOCVisivel = false;
@@ -503,18 +513,20 @@ function goTab(name) {
     } else if(db) {
       // Verificar no Firebase se existe OC em conferência
       db.collection('pedidos_carga').where('status','==','conferindo').limit(1).get()
-        .then(snap => {
+        .then(async snap => {
           if(!snap.empty) {
             const oc = snap.docs[0].data();
-            pedidoAtivo = { id: snap.docs[0].id, numero: oc.numero_pedido, itens: oc.itens_esperados||[] };
+            const ocId = snap.docs[0].id;
+            pedidoAtivo = { id: ocId, numero: oc.numero_pedido, itens: oc.itens_esperados||[] };
             itensOC = oc.itens_esperados || [];
             localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
             g('pedidoForm').style.display        = 'none';
             g('conferenciaPainel').style.display = 'block';
             g('pedidoInfo').textContent          = oc.numero_pedido + (oc.placa_veiculo ? ' · ' + oc.placa_veiculo : '');
-            atualizarKpis();
-            renderProgressoCultivares();
+            // Restaurar progresso já conferido
+            await restaurarProgressoConferencia(ocId);
             if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 500);
+            setTimeout(() => ativarAssinaturas(), 500);
           }
         }).catch(()=>{});
     }
@@ -823,6 +835,50 @@ async function carregarOCsAguardando() {
   }).join('');
 }
 
+async function restaurarProgressoConferencia(ocId) {
+  if(!db || !ocId) return;
+
+  const itensSnap = await db.collection('pedidos_carga')
+    .doc(ocId).collection('itens').get();
+
+  if(itensSnap.empty) return;
+
+  const itensEsperados = pedidoAtivo?.itens || [];
+
+  cargaLidos = [];
+  cargaDivs  = [];
+
+  itensSnap.docs.forEach(doc => {
+    const item = doc.data();
+    const epc        = item.epc        || '';
+    const numero     = item.numero_bag || '—';
+    const cultivar   = item.cultivar   || '—';
+    const lote       = item.lote       || '—';
+    const status     = item.status_validacao || 'lido';
+
+    // Reconstruir cultivar_key com a mesma lógica de registrarBagNaCarga
+    const cultivarBagLow = cultivar.toLowerCase();
+    const itemEsperado = itensEsperados.find(i =>
+      cultivarBagLow.includes((i.cultivar||'').toLowerCase()) ||
+      (i.cultivar||'').toLowerCase().includes(cultivarBagLow)
+    );
+    const cultivar_key = itemEsperado?.cultivar || '?';
+
+    cargaLidos.push({ epc, numero, cultivar, lote, cultivar_key, status });
+
+    if(status === 'divergencia') {
+      if(!cargaDivs.find(d => d.epc === epc)) {
+        cargaDivs.push({ epc, motivo: item.motivo || 'Divergência' });
+      }
+    }
+  });
+
+  atualizarKpis();
+  renderLidos();
+  renderProgressoCultivares();
+  renderDivs();
+}
+
 async function retormarConferencia(ocId) {
   if(!db) return;
   const ocDoc = await db.collection('pedidos_carga').doc(ocId).get();
@@ -832,19 +888,17 @@ async function retormarConferencia(ocId) {
   pedidoAtivo = { id: ocId, numero: oc.numero_pedido, itens: oc.itens_esperados||[] };
   itensOC = oc.itens_esperados || [];
   localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
-  cargaLidos=[]; cargaDivs=[];
-
-  atualizarKpis();
-  renderLidos();
-  renderProgressoCultivares();
 
   g('pedidoInfo').textContent = oc.numero_pedido + (oc.placa_veiculo ? ' · ' + oc.placa_veiculo : '');
   g('pedidoForm').style.display        = 'none';
   g('conferenciaPainel').style.display = 'block';
+
+  // Restaurar progresso já conferido
+  await restaurarProgressoConferencia(ocId);
+
   flash('Conferência retomada — ' + oc.numero_pedido, 'ok');
   iniciarCronometro();
 
-  // Ativar NFC automaticamente
   if('NDEFReader' in window && !nfcCargaAtivo) setTimeout(() => lerNFCCarga(), 300);
   setTimeout(() => ativarAssinaturas(), 300);
 }
