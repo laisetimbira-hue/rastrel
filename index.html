@@ -3044,6 +3044,131 @@ async function removerDoPosicao(bagId, pos) {
   carregarMapa();
 }
 
+// ── SUBSTITUIÇÃO DE TAG ──
+let _substBagId   = null;
+let _substBagNum  = null;
+let _substEpcAntigo = null;
+let _substNFCReader = null;
+let _substNFCAtivo  = false;
+
+async function iniciarSubstituicao() {
+  if(!('NDEFReader' in window)){
+    flash('NFC não disponível — use o Chrome no Android','err'); return;
+  }
+  // Parar outros NFC ativos
+  pararNFC();
+  pararNFCCarga();
+
+  const status = g('subst-status');
+  if(status) status.innerHTML = '<span style="color:var(--amarelo)">Aproxime a tag antiga (rasgada)...</span>';
+
+  try {
+    _substNFCReader = new NDEFReader();
+    _substNFCAtivo  = true;
+    await _substNFCReader.scan();
+
+    _substNFCReader.onreading = async ({ serialNumber }) => {
+      if(!_substNFCAtivo) return;
+      const epc = serialNumber.replace(/:/g,'').toUpperCase();
+      _substNFCAtivo = false;
+
+      // Buscar bag com esse EPC
+      if(status) status.innerHTML = 'Buscando bag...';
+      const snap = await db.collection('bags').where('epc','==',epc).limit(1).get();
+      if(snap.empty){
+        flash('Nenhum bag vinculado a essa tag','err');
+        if(status) status.innerHTML = '';
+        _substNFCAtivo = true;
+        return;
+      }
+
+      const doc = snap.docs[0];
+      const bag = doc.data();
+      _substBagId    = doc.id;
+      _substBagNum   = bag.numero_bag;
+      _substEpcAntigo = epc;
+
+      // Mostrar info do bag e pedir nova tag
+      const info = g('subst-bagInfo');
+      if(info) info.innerHTML = `
+        <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:16px;color:var(--texto)">${bag.numero_bag}</div>
+        <div style="font-size:13px;color:var(--texto2);margin-top:4px">${bag.cultivar_nome||'—'} · Lote ${bag.lote||'—'}</div>
+        <div style="font-size:12px;color:var(--texto3);margin-top:2px">Tag atual: <code>${epc}</code></div>`;
+
+      g('subst-passo1').style.display = 'none';
+      g('subst-passo2').style.display = 'block';
+      if(status) status.innerHTML = '<span style="color:var(--verde)">Bag encontrado! Agora aproxime a nova tag.</span>';
+    };
+  } catch(e) {
+    flash('Erro ao ativar NFC: ' + e.message,'err');
+  }
+}
+
+async function lerNovaTag() {
+  if(!('NDEFReader' in window)){ flash('NFC não disponível','err'); return; }
+
+  const status = g('subst-status');
+  if(status) status.innerHTML = '<span style="color:var(--amarelo)">Aproxime a nova tag...</span>';
+
+  try {
+    if(_substNFCReader) _substNFCAtivo = false;
+    _substNFCReader = new NDEFReader();
+    _substNFCAtivo  = true;
+    await _substNFCReader.scan();
+
+    _substNFCReader.onreading = async ({ serialNumber }) => {
+      if(!_substNFCAtivo) return;
+      _substNFCAtivo = false;
+      const novoEpc = serialNumber.replace(/:/g,'').toUpperCase();
+
+      // Verificar se nova tag já está em uso
+      const snap = await db.collection('bags').where('epc','==',novoEpc).limit(1).get();
+      if(!snap.empty){
+        flash('Essa tag já está vinculada a outro bag!','err');
+        if(status) status.innerHTML = '<span style="color:var(--vermelho)">Tag já em uso — tente outra.</span>';
+        _substNFCAtivo = true;
+        return;
+      }
+
+      // Substituir no Firebase
+      await db.collection('bags').doc(_substBagId).update({
+        epc:          novoEpc,
+        epc_anterior: _substEpcAntigo,
+      });
+
+      // Registrar movimentação
+      await db.collection('movimentacoes').add({
+        bag_id:      _substBagId,
+        numero_bag:  _substBagNum,
+        tipo_evento: 'substituicao_tag',
+        observacao:  `Tag substituída: ${_substEpcAntigo} → ${novoEpc}`,
+        operador:    localStorage.getItem('operador')||'—',
+        dispositivo: localStorage.getItem('dispositivo')||'—',
+        criado_em:   firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      flash(`Tag do bag ${_substBagNum} substituída com sucesso!`, 'ok');
+      cancelarSubstituicao();
+    };
+  } catch(e) {
+    flash('Erro ao ativar NFC: ' + e.message,'err');
+  }
+}
+
+function cancelarSubstituicao() {
+  _substBagId     = null;
+  _substBagNum    = null;
+  _substEpcAntigo = null;
+  _substNFCAtivo  = false;
+  _substNFCReader = null;
+  g('subst-passo1').style.display = 'block';
+  g('subst-passo2').style.display = 'none';
+  const status = g('subst-status');
+  if(status) status.innerHTML = '';
+  const info = g('subst-bagInfo');
+  if(info) info.innerHTML = '';
+}
+
 // ── DESVINCULAR TAG ──
 
 window.onEpcDesvincular = function(val) {
@@ -5228,6 +5353,35 @@ body.tema-claro{
       <p style="font-size:13px;color:var(--texto3);margin-top:6px">Crie um lote primeiro na aba Lotes</p>
       <button class="btn btn-azul" style="margin-top:16px" onclick="goTab('lotes')">
         <i class="ti ti-clipboard-plus"></i> Ir para Lotes
+      </button>
+    </div>
+  </div>
+
+  <!-- Substituição de tag rasgada -->
+  <div class="secao" style="border-color:rgba(217,119,6,.3);margin-top:8px">
+    <div class="secao-titulo" style="color:var(--amarelo)">
+      <i class="ti ti-replace"></i> Substituir tag danificada
+    </div>
+    <p style="font-size:13px;color:var(--texto2);margin-bottom:12px;line-height:1.5">
+      Tag rasgada ou danificada? Leia a tag antiga para identificar o bag, depois aproxime a nova tag para substituir.
+    </p>
+
+    <!-- Passo 1: ler tag antiga -->
+    <div id="subst-passo1">
+      <button class="btn btn-cinza" onclick="iniciarSubstituicao()" style="border-color:var(--amarelo);color:var(--amarelo)">
+        <i class="ti ti-nfc"></i> Ler tag antiga (rasgada)
+      </button>
+    </div>
+
+    <!-- Passo 2: bag encontrado, ler nova tag -->
+    <div id="subst-passo2" style="display:none">
+      <div id="subst-bagInfo" style="background:var(--bg3);border-radius:8px;padding:12px;margin-bottom:12px"></div>
+      <div id="subst-status" style="font-size:13px;color:var(--texto2);margin-bottom:8px;min-height:20px"></div>
+      <button class="btn btn-amarelo" onclick="lerNovaTag()">
+        <i class="ti ti-nfc"></i> Aproxime a nova tag agora
+      </button>
+      <button class="btn btn-cinza" onclick="cancelarSubstituicao()" style="margin-top:6px">
+        <i class="ti ti-x"></i> Cancelar
       </button>
     </div>
   </div>
