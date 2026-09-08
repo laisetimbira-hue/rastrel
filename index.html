@@ -1448,6 +1448,96 @@ async function confirmarExpedicao() {
 
 
 
+// ── AJUSTE DE OC ──
+function abrirAjusteOC() {
+  if(!pedidoAtivo) return;
+  const itens = pedidoAtivo.itens || [];
+  const modal = g('modalAjusteOC');
+  if(!modal) return;
+
+  // Calcular conferidos por cultivar
+  const conferidosPorCultivar = {};
+  cargaLidos.filter(b => b.status !== 'divergencia').forEach(b => {
+    const key = b.cultivar_key || b.cultivar;
+    conferidosPorCultivar[key] = (conferidosPorCultivar[key] || 0) + 1;
+  });
+
+  g('ajusteOCItens').innerHTML = itens.map((item, idx) => {
+    const conferidos = conferidosPorCultivar[item.cultivar] || 0;
+    return `<div class="secao" style="margin-bottom:10px">
+      <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:15px;color:var(--texto);margin-bottom:10px">${item.cultivar}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:center">
+        <div>
+          <div style="font-size:11px;color:var(--texto3);margin-bottom:4px">JÁ CONFERIDOS</div>
+          <div style="font-family:'Montserrat',sans-serif;font-size:22px;font-weight:700;color:var(--verde)">${conferidos}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--texto3);margin-bottom:4px">NOVA QUANTIDADE</div>
+          <input type="number"
+            id="ajuste_qtd_${idx}"
+            value="${item.quantidade}"
+            min="${conferidos}"
+            max="${item.quantidade}"
+            style="width:100%;padding:10px;border:1.5px solid var(--borda);border-radius:8px;
+            font-family:'Montserrat',sans-serif;font-size:18px;font-weight:700;
+            text-align:center;background:var(--bg2);color:var(--texto)"
+            oninput="validarCampoAjuste(this, ${conferidos})"/>
+          <div style="font-size:11px;color:var(--texto3);margin-top:4px">Original: ${item.quantidade} bags</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  modal.style.display = 'flex';
+}
+
+function validarCampoAjuste(input, minimo) {
+  const val = parseInt(input.value) || 0;
+  if(val < minimo) {
+    input.value = minimo;
+    input.style.borderColor = 'var(--vermelho)';
+    flash(`Não pode ser menor que ${minimo} (já conferidos)`, 'err');
+  } else {
+    input.style.borderColor = 'var(--verde)';
+  }
+}
+
+async function salvarAjusteOC() {
+  if(!pedidoAtivo || !db) return;
+  const itens = pedidoAtivo.itens || [];
+
+  const novosItens = itens.map((item, idx) => {
+    const input = g(`ajuste_qtd_${idx}`);
+    const novaQtd = parseInt(input?.value) || item.quantidade;
+    return { ...item, quantidade: novaQtd };
+  });
+
+  try {
+    await db.collection('pedidos_carga').doc(pedidoAtivo.id).update({
+      itens_esperados: novosItens,
+      ajustado_em: firebase.firestore.FieldValue.serverTimestamp(),
+      observacao_ajuste: 'Quantidade ajustada durante conferência',
+    });
+
+    // Atualizar estado local
+    pedidoAtivo.itens = novosItens;
+    itensOC = novosItens;
+    localStorage.setItem('expedicao_ativa', JSON.stringify(pedidoAtivo));
+
+    flash('OC ajustada com sucesso!', 'ok');
+    fecharAjusteOC();
+    atualizarKpis();
+    renderProgressoCultivares();
+  } catch(e) {
+    flash('Erro ao ajustar OC: ' + e.message, 'err');
+  }
+}
+
+function fecharAjusteOC() {
+  const modal = g('modalAjusteOC');
+  if(modal) modal.style.display = 'none';
+}
+
 function pausarConferencia() {
   pararNFCCarga();
   pausarCronometro();
@@ -2306,7 +2396,7 @@ async function abrirLote(numero) {
 function abrirEdicaoLote() {
   if(!loteAtivo || !db) return;
   // Preencher formulário com dados atuais do lote
-  db.collection('bags').where('lote','==',loteAtivo).get().then(snap => {
+  db.collection('bags').where('lote','==',loteAtivo).limit(1).get().then(snap => {
     if(snap.empty) return;
     const b = snap.docs[0].data();
     g('editCultivar').value   = b.cultivar_nome || '';
@@ -2315,8 +2405,6 @@ function abrirEdicaoLote() {
     g('editTratamento').value = b.tratamento     || '';
     g('editPeso').value       = b.peso_kg        || '';
     g('editProdutor').value   = b.produtor       || '';
-    const campoQtd = g('editQtd');
-    if(campoQtd) campoQtd.value = snap.size;
   });
   g('formEditarLote').style.display = 'block';
   g('formEditarLote').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2335,25 +2423,17 @@ async function salvarEdicaoLote() {
   const tratamento = g('editTratamento').value.trim();
   const peso       = parseFloat(g('editPeso').value) || null;
   const produtor   = g('editProdutor').value.trim();
-  const campoQtd   = g('editQtd');
-  const novaQtd    = campoQtd ? parseInt(campoQtd.value) : null;
 
   if(!cultivar){ flash('Informe a cultivar','err'); return; }
-  if(campoQtd && (!novaQtd || novaQtd < 1)){ flash('Informe uma quantidade de bags válida','err'); return; }
 
   const btn = document.querySelector('[onclick="salvarEdicaoLote()"]');
   if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Salvando...'; }
 
   try {
     const snap = await db.collection('bags').where('lote','==',loteAtivo).get();
-    const bags = snap.docs.map(d=>({id:d.id, ...d.data()}))
-      .sort((a,b)=>(a.numero_bag||'').localeCompare(b.numero_bag||''));
-    const qtdAtual = bags.length;
-
-    // 1) Atualizar os dados comuns em todos os bags já existentes
     const batch = db.batch();
-    bags.forEach(b => {
-      batch.update(db.collection('bags').doc(b.id), {
+    snap.docs.forEach(doc => {
+      batch.update(doc.ref, {
         cultivar_nome: cultivar,
         categoria,
         peneira,
@@ -2365,65 +2445,7 @@ async function salvarEdicaoLote() {
     });
     await batch.commit();
 
-    let msgQtd = '';
-
-    // 2) Ajustar a quantidade de bags do lote, se o campo estiver presente
-    if(campoQtd && novaQtd !== qtdAtual){
-      if(novaQtd > qtdAtual){
-        // Aumentar — cria bags novos, ainda sem tag e sem posição no mapa
-        const b0          = bags[0] || {};
-        const cultivarId  = b0.cultivar_id || '';
-        const numerosJa   = new Set(bags.map(b=>b.numero_bag));
-        const paraCriar   = novaQtd - qtdAtual;
-        let proximoNum    = qtdAtual + 1;
-
-        for(let i=0; i<paraCriar; i++){
-          let numeroBag;
-          do {
-            numeroBag = loteAtivo + '-' + String(proximoNum).padStart(2,'0');
-            proximoNum++;
-          } while(numerosJa.has(numeroBag));
-          numerosJa.add(numeroBag);
-
-          await db.collection('bags').add({
-            epc:               null,
-            numero_bag:        numeroBag,
-            lote:               loteAtivo,
-            cultivar_id:        cultivarId,
-            cultivar_nome:      cultivar,
-            categoria, peneira, peso_kg: peso,
-            tratamento, produtor,
-            localizacao_atual:  '',
-            slot_posicao:       null,
-            entrada_posicao:    null,
-            status:             'aguardando_tag',
-            criado_em:          firebase.firestore.FieldValue.serverTimestamp(),
-            atualizado_em:      firebase.firestore.FieldValue.serverTimestamp(),
-          });
-        }
-        msgQtd = ' — ' + paraCriar + ' bag(s) novo(s) adicionados (aguardando tag)';
-
-      } else {
-        // Diminuir — só remove bags que ainda não têm tag vinculada,
-        // começando pelos números mais altos (os criados por último)
-        const remover    = qtdAtual - novaQtd;
-        const candidatos = bags.slice(-remover);
-        const bloqueados = candidatos.filter(b => b.status !== 'aguardando_tag' || b.epc);
-
-        if(bloqueados.length){
-          flash('Não foi possível reduzir a quantidade: ' + bloqueados.length +
-            ' bag(s) já têm tag vinculada (' + bloqueados.map(b=>b.numero_bag).join(', ') +
-            '). Desvincule a tag antes de remover.', 'err');
-        } else {
-          const batchDel = db.batch();
-          candidatos.forEach(b => batchDel.delete(db.collection('bags').doc(b.id)));
-          await batchDel.commit();
-          msgQtd = ' — ' + remover + ' bag(s) removidos (nenhum tinha tag ainda)';
-        }
-      }
-    }
-
-    flash('Lote ' + loteAtivo + ' atualizado' + msgQtd, 'ok');
+    flash('Lote ' + loteAtivo + ' atualizado — ' + snap.size + ' bags editados', 'ok');
     fecharEdicaoLote();
     // Recarregar detalhe do lote para refletir as alterações
     await abrirLote(loteAtivo);
@@ -2431,74 +2453,6 @@ async function salvarEdicaoLote() {
     flash('Erro ao salvar: ' + e.message, 'err');
   } finally {
     if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-check"></i> Salvar alterações'; }
-  }
-}
-
-// ── EXCLUIR LOTE ──
-async function excluirLote() {
-  if(!loteAtivo || !db){ flash('Nenhum lote selecionado','err'); return; }
-
-  const snap = await db.collection('bags').where('lote','==',loteAtivo).get();
-  if(snap.empty){ flash('Lote não encontrado','err'); return; }
-
-  const bags      = snap.docs.map(d=>({id:d.id, ...d.data()}));
-  const expedidos = bags.filter(b=>b.status==='expedido');
-
-  let msg = 'Excluir o lote ' + loteAtivo + '?\n\nIsso vai apagar PERMANENTEMENTE ' + bags.length +
-    ' bag(s), as tags vinculadas a eles e o histórico de movimentação. Não tem como desfazer.';
-  if(expedidos.length){
-    msg += '\n\n⚠️ ATENÇÃO: ' + expedidos.length + ' bag(s) deste lote já foram EXPEDIDOS. ' +
-      'O registro deles será apagado, mas isso não desfaz a expedição em si nem altera a OC onde já foram conferidos.';
-  }
-  msg += '\n\nPara confirmar, digite o número do lote: ' + loteAtivo;
-
-  const confirmacao = prompt(msg);
-  if(confirmacao === null) return;
-  if(confirmacao.trim().toUpperCase() !== loteAtivo.toUpperCase()){
-    flash('Exclusão cancelada — número não corresponde','warn');
-    return;
-  }
-
-  const btn = document.querySelector('[onclick="excluirLote()"]');
-  if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Excluindo...'; }
-
-  try {
-    const bagIds     = bags.map(b=>b.id);
-    const epcsUsados = bags.map(b=>b.epc).filter(Boolean);
-
-    // 1) Apagar os bags — em blocos de até 500 (limite de um batch no Firestore)
-    for(let i=0; i<snap.docs.length; i+=500){
-      const bloco = snap.docs.slice(i, i+500);
-      const batch = db.batch();
-      bloco.forEach(doc => batch.delete(doc.ref));
-      await batch.commit();
-    }
-
-    // 2) Liberar os EPCs vinculados, para as tags físicas poderem ser reutilizadas
-    for(let i=0; i<epcsUsados.length; i+=500){
-      const bloco = epcsUsados.slice(i, i+500);
-      const batch = db.batch();
-      bloco.forEach(epc => batch.delete(db.collection('epcs').doc(epc)));
-      await batch.commit();
-    }
-
-    // 3) Apagar o histórico de movimentações desses bags (consulta 'in' limitada a 10 por vez)
-    for(let i=0; i<bagIds.length; i+=10){
-      const grupo   = bagIds.slice(i, i+10);
-      const movSnap = await db.collection('movimentacoes').where('bag_id','in', grupo).get();
-      if(!movSnap.empty){
-        const batchMov = db.batch();
-        movSnap.docs.forEach(d => batchMov.delete(d.ref));
-        await batchMov.commit();
-      }
-    }
-
-    flash('Lote ' + loteAtivo + ' excluído — ' + bags.length + ' bag(s) removidos', 'ok');
-    loteAtivo = null;
-    goTab('lotes');
-  } catch(e) {
-    flash('Erro ao excluir lote: ' + e.message, 'err');
-    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="ti ti-trash"></i> Excluir lote'; }
   }
 }
 
@@ -5529,14 +5483,6 @@ body.tema-claro{
       <label>Produtor</label>
       <input id="editProdutor" type="text" placeholder="Nome do produtor"/>
     </div>
-    <div class="campo">
-      <label>Quantidade de bags</label>
-      <input id="editQtd" type="number" min="1" max="500" placeholder="Ex: 20"/>
-      <div style="font-size:11px;color:var(--texto3);margin-top:5px;line-height:1.5">
-        Aumentar cria bags novos (aguardando tag). Diminuir remove os últimos bags —
-        só funciona se eles ainda não tiverem tag vinculada.
-      </div>
-    </div>
     <button class="btn btn-azul" onclick="salvarEdicaoLote()">
       <i class="ti ti-check"></i> Salvar alterações
     </button>
@@ -5589,18 +5535,6 @@ body.tema-claro{
   <div id="secClientes" class="secao" style="display:none">
     <div class="secao-titulo"><i class="ti ti-users"></i> Resumo por cliente</div>
     <div id="listaClientes"></div>
-  </div>
-
-  <!-- Zona de perigo -->
-  <div class="secao" style="border-color:rgba(248,113,113,.25);margin-top:20px">
-    <div class="secao-titulo" style="color:var(--vermelho)"><i class="ti ti-trash"></i> Zona de perigo</div>
-    <p style="font-size:13px;color:var(--texto2);margin-bottom:10px;line-height:1.5">
-      Exclui <strong>permanentemente</strong> todos os bags deste lote, as tags vinculadas a eles e o
-      histórico de movimentação. Use isso só se o lote foi criado errado.
-    </p>
-    <button class="btn btn-verm" onclick="excluirLote()">
-      <i class="ti ti-trash"></i> Excluir lote
-    </button>
   </div>
 </main>
 
@@ -5856,12 +5790,37 @@ body.tema-claro{
     <button id="btnConfirmarExpedicao" class="btn btn-verde" onclick="confirmarExpedicao()">
       <i class="ti ti-check"></i> Confirmar expedição
     </button>
+    <button class="btn btn-cinza" onclick="abrirAjusteOC()" style="border-color:var(--amarelo);color:var(--amarelo)">
+      <i class="ti ti-adjustments"></i> Ajustar quantidade da OC
+    </button>
     <button class="btn btn-cinza" onclick="pausarConferencia()">
       <i class="ti ti-player-pause"></i> Pausar — continuar depois
     </button>
     <button class="btn btn-verm" onclick="cancelarConferencia()" style="margin-top:4px">
       <i class="ti ti-x"></i> Cancelar e descartar conferência
     </button>
+  </div>
+
+  <!-- Modal ajuste de OC -->
+  <div id="modalAjusteOC" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:800;align-items:flex-end;justify-content:center">
+    <div style="background:var(--bg2);border-radius:var(--r) var(--r) 0 0;padding:20px 16px 32px;width:100%;max-width:640px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-md)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:18px;color:var(--texto)">
+          <i class="ti ti-adjustments" style="color:var(--amarelo)"></i> Ajustar OC
+        </div>
+        <button onclick="fecharAjusteOC()" style="background:var(--bg3);border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;color:var(--texto2);font-size:16px">✕</button>
+      </div>
+      <p style="font-size:13px;color:var(--texto2);margin-bottom:16px;line-height:1.5">
+        Ajuste a quantidade esperada para refletir o que realmente cabe no caminhão. O valor não pode ser menor que o já conferido.
+      </p>
+      <div id="ajusteOCItens"></div>
+      <button class="btn btn-verde" onclick="salvarAjusteOC()" style="margin-top:8px">
+        <i class="ti ti-check"></i> Salvar ajuste
+      </button>
+      <button class="btn btn-cinza" onclick="fecharAjusteOC()" style="margin-top:6px">
+        <i class="ti ti-x"></i> Cancelar
+      </button>
+    </div>
   </div>
 
   <!-- HISTÓRICO -->
