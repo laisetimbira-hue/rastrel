@@ -4551,7 +4551,10 @@ body{
 
   /* Tela do mapa ocupa toda a área sem padding lateral */
   #screen-mapa{
-    padding:20px 16px 40px !important;
+    padding:16px 12px 40px !important;
+    max-width:none !important;
+    width:100% !important;
+    box-sizing:border-box;
   }
 
   /* Botão NFC */
@@ -5169,7 +5172,6 @@ body.tema-claro{
 @media (min-width:900px){
   .drawer{transition:width .22s ease, border-color .22s ease}
   body.menu-recolhido .drawer{width:0 !important;min-width:0;border-right:0 !important;overflow:hidden}
-  #screen-mapa{max-width:100% !important;padding:20px 28px 40px}
 }
 @media all{
   .drawer-item svg,.hamburger svg{flex-shrink:0}
@@ -5258,7 +5260,7 @@ body.tema-claro{
 
 <!-- ══ VINCULAR ══ --><div class="screen-wrapper">
 
-<main class="screen" id="screen-mapa" style="padding:0;max-width:none;width:100%">
+<main class="screen" id="screen-mapa">
   <iframe title="Mapa de Bags" srcdoc="<!DOCTYPE html>
 <html lang=&quot;pt-BR&quot;>
 <head>
@@ -5282,7 +5284,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 input,select{font-family:inherit;background:var(--surface);border:1px solid var(--line2);color:var(--ink);border-radius:11px;padding:12px 14px;font-size:15px;outline:none}
 input::placeholder{color:#aab2aa}
 input:focus,select:focus{border-color:var(--accent)}
-.wrap{max-width:1280px;margin:0 auto;padding:0 16px}
+.wrap{max-width:100%;margin:0 auto;padding:0 12px}
 header{position:sticky;top:0;z-index:20;background:var(--bg);padding:8px 14px 0}
 header .wrap{padding:0}
 .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}
@@ -5318,11 +5320,11 @@ header .wrap{padding:0}
 .lado-h .sw{font-size:13px;color:var(--mut);font-weight:400;margin-left:4px}
 .corredor{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--mut);font-size:13px;font-weight:500;margin:6px 0 0}
 .corredor:before,.corredor:after{content:&quot;&quot;;height:1px;flex:1;border-top:1px solid var(--line)}
-.strip{display:flex;align-items:flex-start;gap:12px;overflow-x:auto;padding:6px 0 14px;scrollbar-width:thin}
+.strip{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;overflow-x:visible;padding:6px 0 10px}
 .strip::-webkit-scrollbar{height:10px}
 .strip::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px}
 .strip::-webkit-scrollbar-track{background:#f2f4f2;border-radius:6px}
-.rblock{background:var(--surface);border:1px solid var(--line);border-radius:12px;flex:0 0 auto;overflow:hidden}
+.rblock{background:var(--surface);border:1px solid var(--line);border-radius:12px;flex:0 0 auto;overflow:hidden;width:200px}
 .rblock.dim{opacity:.4}
 .rblock.match{border-color:var(--green);box-shadow:0 0 0 2px var(--green)}
 .rbh{display:flex;align-items:center;gap:6px;padding:6px 10px 4px;cursor:pointer}
