@@ -479,7 +479,12 @@ function goTab(name) {
   if(name==='extrato')   { consultarExtrato(); carregarTSIs(); }
   if(name==='saldo')     consultarSaldo();
   if(name==='lotes') carregarLotes();
-  if(name==='mapa')  { if(_armazemAtivo==='A3') carregarMapa(); else carregarMapa4(); }
+  if(name==='mapa')  {
+    if(window.matchMedia('(min-width:900px)').matches) document.body.classList.add('menu-recolhido');
+    if(_armazemAtivo==='A3') carregarMapa(); else carregarMapa4();
+  } else {
+    if(window.matchMedia('(min-width:900px)').matches) document.body.classList.remove('menu-recolhido');
+  }
   if(name==='mapa4') carregarMapa4();
   if(name==='vincular') {
     _ultimoEpcCarga   = null;
@@ -4540,9 +4545,14 @@ body{
     flex-wrap:wrap;
     overflow-x:visible;
     touch-action:auto;
-    gap:12px;
+    gap:10px;
   }
-  .posicao-nova{width:calc(10% - 10px);min-width:180px}
+  .posicao-nova{width:200px;min-width:200px;flex-shrink:0}
+
+  /* Tela do mapa ocupa toda a área sem padding lateral */
+  #screen-mapa{
+    padding:20px 16px 40px !important;
+  }
 
   /* Botão NFC */
   .btn-nfc-grande{width:200px;height:200px}
