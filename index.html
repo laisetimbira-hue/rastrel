@@ -5578,7 +5578,12 @@ function renderMap(){
     const label= STATE.wh==='Garagem' ? arr.map(b=>b.id).join(' · ') : LADOS[i]+(rng?' — '+rng:'');
     map.appendChild(el('div','lado-h','<b>'+esc(label)+'</b><span class=&quot;sw&quot;>↔ deslize</span>'));
     const strip=el('div','strip');
-    arr.forEach(b=>strip.appendChild(blockCard(b,i)));
+    if(STATE.wh==='Garagem' && arr.length > 1) strip.style.flexWrap='nowrap';
+    arr.forEach(b=>{
+      const card=blockCard(b,i);
+      if(STATE.wh==='Garagem' && arr.length > 1) card.style.flex='1 1 0';
+      strip.appendChild(card);
+    });
     map.appendChild(strip);
   });
 }
