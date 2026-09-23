@@ -5332,9 +5332,9 @@ header .wrap{padding:0}
 .rbadge{margin-left:auto;font-size:11px;font-weight:600;color:var(--mut);background:var(--soft);border-radius:20px;padding:2px 8px}
 .rface{text-align:center;font-size:8px;letter-spacing:2px;color:#b3b9b3;padding:1px 0 3px;font-weight:600}
 .rface.fundo{padding:3px 0 3px}
-.files{display:flex;gap:6px;align-items:flex-start;max-height:max(160px,calc((100dvh - 320px)/2));overflow-y:auto;padding:0 10px}
+.files{display:flex;gap:6px;align-items:flex-start;max-height:max(220px,calc((100dvh - 260px)/2));overflow-y:auto;padding:0 10px}
 .files::-webkit-scrollbar{width:6px}.files::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
-.file{display:flex;flex-direction:column;gap:4px;min-width:130px;flex:1 0 130px}
+.file{display:flex;flex-direction:column;gap:4px;min-width:110px;flex:1 0 110px}
 .flabel{text-align:center;font-size:8px;letter-spacing:1.5px;color:#c2c8c2;font-weight:700}
 .slot{border:1px solid var(--line);border-radius:8px;min-height:30px;padding:4px 8px;text-align:left;display:flex;flex-direction:column;justify-content:center;position:relative;overflow:hidden;transition:.1s}
 .slot:active{transform:scale(.98)}
@@ -5578,10 +5578,10 @@ function renderMap(){
     const label= STATE.wh==='Garagem' ? arr.map(b=>b.id).join(' · ') : LADOS[i]+(rng?' — '+rng:'');
     map.appendChild(el('div','lado-h','<b>'+esc(label)+'</b><span class=&quot;sw&quot;>↔ deslize</span>'));
     const strip=el('div','strip');
-    if(STATE.wh==='Garagem' && arr.length > 1) strip.style.flexWrap='nowrap';
+    if(STATE.wh==='Garagem') strip.style.flexDirection='column';
     arr.forEach(b=>{
       const card=blockCard(b,i);
-      if(STATE.wh==='Garagem' && arr.length > 1){ card.style.flex='1 1 0'; card.style.minWidth='0'; card.style.maxWidth='50%'; }
+      if(STATE.wh==='Garagem'){ card.style.flex='none'; card.style.width='100%'; card.style.maxWidth='100%'; }
       strip.appendChild(card);
     });
     map.appendChild(strip);
