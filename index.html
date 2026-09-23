@@ -5581,7 +5581,7 @@ function renderMap(){
     if(STATE.wh==='Garagem' && arr.length > 1) strip.style.flexWrap='nowrap';
     arr.forEach(b=>{
       const card=blockCard(b,i);
-      if(STATE.wh==='Garagem' && arr.length > 1) card.style.flex='1 1 0';
+      if(STATE.wh==='Garagem' && arr.length > 1){ card.style.flex='1 1 0'; card.style.minWidth='0'; card.style.maxWidth='50%'; }
       strip.appendChild(card);
     });
     map.appendChild(strip);
