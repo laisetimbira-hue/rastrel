@@ -5591,7 +5591,7 @@ function blockCard(b,ladoIdx){
   const active=filterActive();
   const hits=b.pilhas.filter(matchP).length;
   let cls='rblock';if(active)cls+= hits?' match':' dim';
-  const card=el('div',cls);const isArm=(b.id.charAt(0)==='A'&amp;&amp;b.id.indexOf('B')>0);let topO=isArm&amp;&amp;ladoIdx===0;if(b.id==='A4B1')topO=!topO;const FLIP_LABEL={'Armazém 3':true};let labelSwap=topO;if(FLIP_LABEL[STATE.wh])labelSwap=!labelSwap;const rev=false;
+  const card=el('div',cls);const isArm=(b.id.charAt(0)==='A'&amp;&amp;b.id.indexOf('B')>0);let topO=isArm&amp;&amp;ladoIdx===0;if(b.id==='A4B1')topO=!topO;const FLIP_LABEL={'Armazém 3':false};let labelSwap=topO;if(FLIP_LABEL[STATE.wh])labelSwap=!labelSwap;const rev=false;
   const head=el('div','rbh','<span class=&quot;rbid&quot;>'+esc(blockLabel(b.id))+'</span><span class=&quot;rbadge&quot;>'+b.pilhas.length+'</span>');
   head.onclick=()=>openBlock(b);
   card.appendChild(head);
