@@ -284,6 +284,55 @@ async function fazerLogin(ev) {
   }
   return false;
 }
+function abrirTrocaSenha() {
+  const u = rastrelAuth && rastrelAuth.currentUser;
+  if (!u) return;
+  fecharDrawer();
+  ['senhaAtual','senhaNova','senhaNova2'].forEach(id => document.getElementById(id).value = '');
+  const m = document.getElementById('senhaMsg'); m.textContent = ''; m.classList.remove('ok');
+  document.getElementById('senhaUsuario').textContent = (u.email || '').split('@')[0];
+  document.getElementById('senhaOverlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('senhaAtual').focus(), 50);
+}
+function fecharTrocaSenha() {
+  document.getElementById('senhaOverlay').style.display = 'none';
+}
+async function salvarNovaSenha(ev) {
+  if (ev) ev.preventDefault();
+  const u = rastrelAuth && rastrelAuth.currentUser;
+  const atual = document.getElementById('senhaAtual').value;
+  const nova  = document.getElementById('senhaNova').value;
+  const nova2 = document.getElementById('senhaNova2').value;
+  const msg = document.getElementById('senhaMsg');
+  const btn = document.getElementById('senhaBtn');
+  msg.textContent = ''; msg.classList.remove('ok');
+  if (!u) { msg.textContent = 'Sessão expirada. Entre de novo.'; return false; }
+  if (nova.length < 6) { msg.textContent = 'A nova senha precisa ter pelo menos 6 caracteres.'; return false; }
+  if (nova !== nova2) { msg.textContent = 'As duas senhas novas não são iguais.'; return false; }
+  if (nova === atual) { msg.textContent = 'A nova senha é igual à atual.'; return false; }
+  if (!navigator.onLine) { msg.textContent = 'Sem internet. Trocar a senha precisa de conexão.'; return false; }
+  btn.disabled = true; btn.textContent = 'Salvando...';
+  try {
+    const cred = firebase.auth.EmailAuthProvider.credential(u.email, atual);
+    await u.reauthenticateWithCredential(cred);
+    await u.updatePassword(nova);
+    ['senhaAtual','senhaNova','senhaNova2'].forEach(id => document.getElementById(id).value = '');
+    msg.classList.add('ok'); msg.textContent = 'Senha trocada! Use a nova senha no próximo login.';
+    setTimeout(fecharTrocaSenha, 1800);
+  } catch (e) {
+    const c = e && e.code;
+    msg.textContent =
+      (c === 'auth/invalid-credential' || c === 'auth/wrong-password') ? 'Senha atual incorreta.'
+      : c === 'auth/weak-password' ? 'Senha muito fraca. Use pelo menos 6 caracteres.'
+      : c === 'auth/too-many-requests' ? 'Muitas tentativas. Aguarde alguns minutos.'
+      : c === 'auth/network-request-failed' ? 'Sem conexão com a internet.'
+      : 'Não foi possível trocar a senha (' + (c || 'erro') + ').';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Salvar nova senha';
+  }
+  return false;
+}
+
 function sairDoRastrel() {
   if (!rastrelAuth) return;
   const pend = (typeof lerFilaPendente === 'function') ? lerFilaPendente().length : 0;
@@ -5266,6 +5315,10 @@ body.tema-claro{
 .login-card button:disabled{opacity:.6;cursor:default}
 .usuario-sair{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;font-size:12px;opacity:.85}
 .usuario-sair span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usuario-acoes{display:flex;gap:6px;flex-shrink:0}
+.senha-overlay{background:rgba(10,30,18,.72);backdrop-filter:blur(3px)}
+.login-card .login-cancelar{background:transparent;color:#4a544a;border:1px solid #dcdfdc;font-weight:600}
+.login-msg.ok{color:#206b3e}
 .btn-sair{flex-shrink:0;padding:5px 12px;border-radius:999px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:600;cursor:pointer}
 </style>
 </head>
@@ -5347,10 +5400,30 @@ body.tema-claro{
     </div>
     <div class="usuario-sair">
       <span id="usuarioLogado"></span>
-      <button type="button" class="btn-sair" onclick="sairDoRastrel()">Sair</button>
+      <span class="usuario-acoes">
+        <button type="button" class="btn-sair" onclick="abrirTrocaSenha()">Trocar senha</button>
+        <button type="button" class="btn-sair" onclick="sairDoRastrel()">Sair</button>
+      </span>
     </div>
   </div>
 </nav>
+
+<!-- ── TROCAR SENHA ── -->
+<div id="senhaOverlay" class="login-overlay senha-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="senhaTitulo">
+  <form class="login-card" onsubmit="return salvarNovaSenha(event)" autocomplete="off">
+    <div class="login-logo" id="senhaTitulo" style="font-size:20px;letter-spacing:.02em">Trocar senha</div>
+    <div class="login-sub">Usuário: <b id="senhaUsuario"></b></div>
+    <label for="senhaAtual">Senha atual</label>
+    <input id="senhaAtual" type="password" autocomplete="current-password" required>
+    <label for="senhaNova">Nova senha <span style="font-weight:400;color:#8a938a">(mínimo 6 caracteres)</span></label>
+    <input id="senhaNova" type="password" autocomplete="new-password" minlength="6" required>
+    <label for="senhaNova2">Repita a nova senha</label>
+    <input id="senhaNova2" type="password" autocomplete="new-password" minlength="6" required>
+    <div id="senhaMsg" class="login-msg" role="alert"></div>
+    <button id="senhaBtn" type="submit">Salvar nova senha</button>
+    <button type="button" class="login-cancelar" onclick="fecharTrocaSenha()">Cancelar</button>
+  </form>
+</div>
 
 <!-- ── LOGIN ── -->
 <div id="loginOverlay" class="login-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="loginTitulo">
