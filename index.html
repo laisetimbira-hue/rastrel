@@ -15,6 +15,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script>
 const initializeApp = (cfg, name) => firebase.apps.find(a=>a.name===name) || firebase.initializeApp(cfg, name);
 const getFirestore  = (app) => app.firestore();
@@ -226,6 +227,72 @@ const FIREBASE_CONFIG_DEFAULT = {
   appId: "1:580280416030:web:7eeed32f444611d7247b0f"
 };
 
+// ── AUTENTICAÇÃO ──
+let rastrelAuth = null;
+function exigirLogin(app) {
+  rastrelAuth = app.auth();
+  return new Promise(resolve => {
+    let liberado = false;
+    rastrelAuth.onAuthStateChanged(user => {
+      if (user) {
+        esconderLogin();
+        const el = document.getElementById('usuarioLogado');
+        if (el) el.textContent = user.email || '';
+        if (!liberado) { liberado = true; resolve(user); }
+      } else {
+        if (liberado) { location.reload(); return; } // saiu: recarrega e volta para o login
+        mostrarLogin();
+      }
+    });
+  });
+}
+function mostrarLogin() {
+  const o = document.getElementById('loginOverlay');
+  if (!o) return;
+  o.style.display = 'flex';
+  setTimeout(() => { const e = document.getElementById('loginEmail'); if (e && !e.value) e.focus(); }, 50);
+}
+function esconderLogin() {
+  const o = document.getElementById('loginOverlay');
+  if (o) o.style.display = 'none';
+}
+async function fazerLogin(ev) {
+  if (ev) ev.preventDefault();
+  const email = (document.getElementById('loginEmail').value || '').trim();
+  const senha = document.getElementById('loginSenha').value || '';
+  const msg = document.getElementById('loginMsg');
+  const btn = document.getElementById('loginBtn');
+  msg.textContent = '';
+  if (!email || !senha) { msg.textContent = 'Preencha e-mail e senha.'; return false; }
+  if (!navigator.onLine) { msg.textContent = 'Sem internet. O primeiro login precisa de conexão.'; return false; }
+  btn.disabled = true; btn.textContent = 'Entrando...';
+  try {
+    await rastrelAuth.signInWithEmailAndPassword(email, senha);
+    document.getElementById('loginSenha').value = '';
+  } catch (e) {
+    const c = e && e.code;
+    msg.textContent =
+      (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found' || c === 'auth/invalid-email')
+        ? 'E-mail ou senha incorretos.'
+      : c === 'auth/too-many-requests' ? 'Muitas tentativas. Aguarde alguns minutos.'
+      : c === 'auth/network-request-failed' ? 'Sem conexão com a internet.'
+      : 'Não foi possível entrar (' + (c || 'erro') + ').';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Entrar';
+  }
+  return false;
+}
+function sairDoRastrel() {
+  if (!rastrelAuth) return;
+  const pend = (typeof lerFilaPendente === 'function') ? lerFilaPendente().length : 0;
+  if (pend > 0) {
+    alert('Há ' + pend + ' operação(ões) aguardando sincronizar. Conecte à internet antes de sair, para não perder nada.');
+    return;
+  }
+  fecharDrawer();
+  rastrelAuth.signOut();
+}
+
 async function tentarConectar() {
   const cfgSalva = localStorage.getItem('fb_config');
   const cfg = cfgSalva ? JSON.parse(cfgSalva) : FIREBASE_CONFIG_DEFAULT;
@@ -242,7 +309,11 @@ async function tentarConectar() {
   }
   try {
     const app = initializeApp(cfg,'seedbase-rfid');
+    // ── LOGIN: o banco só é liberado depois que o usuário entra ──
+    // O login fica salvo no aparelho (também funciona offline depois do 1º acesso).
+    await exigirLogin(app);
     db = getFirestore(app);
+    window.rastrelDb = db; // o Mapa de Bags (iframe) reaproveita esta conexão já autenticada
 
     // Habilita cache local + fila de escrita offline.
     // synchronizeTabs permite múltiplas abas/instâncias compartilharem o cache.
@@ -5177,6 +5248,23 @@ body.tema-claro{
   .drawer-item svg,.hamburger svg{flex-shrink:0}
   .drawer-item{display:flex;align-items:center;gap:11px}
 }
+
+/* ── LOGIN RASTREL ── */
+.login-overlay{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;
+  background:linear-gradient(160deg,#0f3d24 0%,#1a5c36 55%,#206b3e 100%)}
+.login-card{width:100%;max-width:360px;background:#fff;border-radius:18px;padding:28px 24px 24px;box-shadow:0 20px 60px -20px rgba(0,0,0,.45);
+  display:flex;flex-direction:column;color:#232823;font-family:inherit}
+.login-logo{font-weight:800;font-size:26px;letter-spacing:.08em;color:#206b3e}
+.login-sub{font-size:13px;color:#6b756b;margin:4px 0 20px}
+.login-card label{font-size:12px;font-weight:600;color:#4a544a;margin:10px 0 6px}
+.login-card input{font-size:16px;padding:12px 13px;border:1.5px solid #dcdfdc;border-radius:10px;background:#fafbfa;color:#232823;outline:none}
+.login-card input:focus{border-color:#2b9457;background:#fff}
+.login-msg{min-height:18px;font-size:13px;color:#b42318;margin:10px 0 4px}
+.login-card button{margin-top:6px;padding:13px;border:0;border-radius:10px;background:#206b3e;color:#fff;font-size:15px;font-weight:700;cursor:pointer}
+.login-card button:disabled{opacity:.6;cursor:default}
+.usuario-sair{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;font-size:12px;opacity:.85}
+.usuario-sair span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btn-sair{flex-shrink:0;padding:5px 12px;border-radius:999px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:600;cursor:pointer}
 </style>
 </head>
 <body>
@@ -5255,8 +5343,26 @@ body.tema-claro{
       <span id="connTxtDrawer">Iniciando...</span>
       <span class="badge-pendentes" id="badgePendentesDrawer" style="display:none" title="Operações aguardando sincronização"></span>
     </div>
+    <div class="usuario-sair">
+      <span id="usuarioLogado"></span>
+      <button type="button" class="btn-sair" onclick="sairDoRastrel()">Sair</button>
+    </div>
   </div>
 </nav>
+
+<!-- ── LOGIN ── -->
+<div id="loginOverlay" class="login-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="loginTitulo">
+  <form class="login-card" onsubmit="return fazerLogin(event)" autocomplete="on">
+    <div class="login-logo">RASTREL</div>
+    <div class="login-sub" id="loginTitulo">Rastreabilidade de big bags · acesso restrito</div>
+    <label for="loginEmail">E-mail</label>
+    <input id="loginEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+    <label for="loginSenha">Senha</label>
+    <input id="loginSenha" type="password" autocomplete="current-password" required>
+    <div id="loginMsg" class="login-msg" role="alert"></div>
+    <button id="loginBtn" type="submit">Entrar</button>
+  </form>
+</div>
 
 
 <!-- ══ VINCULAR ══ --><div class="screen-wrapper">
@@ -5809,7 +5915,9 @@ function initFirebase(){
     return;
   }
   try{
-    firebase.initializeApp(FIREBASE_CONFIG);STATE.db=firebase.firestore();STATE.cloud=true;
+    const _pdb=(function(){try{return window.parent&amp;&amp;window.parent!==window&amp;&amp;window.parent.rastrelDb;}catch(e){return null;}})();
+    if(!_pdb&amp;&amp;window.parent!==window){const _w=setInterval(()=>{let d=null;try{d=window.parent.rastrelDb;}catch(e){}if(d){clearInterval(_w);initFirebase();}},400);return;}
+    if(_pdb){STATE.db=_pdb;}else{firebase.initializeApp(FIREBASE_CONFIG);STATE.db=firebase.firestore();}STATE.cloud=true;
     $('#sync').className='sync on';$('#sync').textContent='nuvem conectada';
     STATE.db.collection('mapa').doc('estado').onSnapshot(doc=>{
       if(doc.exists){const d=doc.data();
