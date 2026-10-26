@@ -228,6 +228,7 @@ const FIREBASE_CONFIG_DEFAULT = {
 };
 
 // ── AUTENTICAÇÃO ──
+const DOMINIO_LOGIN = 'sementescomvigor.com'; // o usuário digita só o nome; o domínio é completado aqui
 let rastrelAuth = null;
 function exigirLogin(app) {
   rastrelAuth = app.auth();
@@ -237,7 +238,7 @@ function exigirLogin(app) {
       if (user) {
         esconderLogin();
         const el = document.getElementById('usuarioLogado');
-        if (el) el.textContent = user.email || '';
+        if (el) el.textContent = (user.email || '').split('@')[0];
         if (!liberado) { liberado = true; resolve(user); }
       } else {
         if (liberado) { location.reload(); return; } // saiu: recarrega e volta para o login
@@ -258,12 +259,13 @@ function esconderLogin() {
 }
 async function fazerLogin(ev) {
   if (ev) ev.preventDefault();
-  const email = (document.getElementById('loginEmail').value || '').trim();
+  let email = (document.getElementById('loginEmail').value || '').trim().toLowerCase();
+  if (email && email.indexOf('@') < 0) email = email + '@' + DOMINIO_LOGIN; // digita só o nome
   const senha = document.getElementById('loginSenha').value || '';
   const msg = document.getElementById('loginMsg');
   const btn = document.getElementById('loginBtn');
   msg.textContent = '';
-  if (!email || !senha) { msg.textContent = 'Preencha e-mail e senha.'; return false; }
+  if (!email || !senha) { msg.textContent = 'Preencha usuário e senha.'; return false; }
   if (!navigator.onLine) { msg.textContent = 'Sem internet. O primeiro login precisa de conexão.'; return false; }
   btn.disabled = true; btn.textContent = 'Entrando...';
   try {
@@ -273,7 +275,7 @@ async function fazerLogin(ev) {
     const c = e && e.code;
     msg.textContent =
       (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found' || c === 'auth/invalid-email')
-        ? 'E-mail ou senha incorretos.'
+        ? 'Usuário ou senha incorretos.'
       : c === 'auth/too-many-requests' ? 'Muitas tentativas. Aguarde alguns minutos.'
       : c === 'auth/network-request-failed' ? 'Sem conexão com a internet.'
       : 'Não foi possível entrar (' + (c || 'erro') + ').';
@@ -5355,8 +5357,8 @@ body.tema-claro{
   <form class="login-card" onsubmit="return fazerLogin(event)" autocomplete="on">
     <div class="login-logo">RASTREL</div>
     <div class="login-sub" id="loginTitulo">Rastreabilidade de big bags · acesso restrito</div>
-    <label for="loginEmail">E-mail</label>
-    <input id="loginEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+    <label for="loginEmail">Usuário</label>
+    <input id="loginEmail" type="text" placeholder="seu nome" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required>
     <label for="loginSenha">Senha</label>
     <input id="loginSenha" type="password" autocomplete="current-password" required>
     <div id="loginMsg" class="login-msg" role="alert"></div>
