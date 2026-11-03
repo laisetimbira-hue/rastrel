@@ -384,6 +384,7 @@ async function tentarConectar() {
 
     configurarListenersDeRede();
     atualizarBadgePendentes();
+    carregarPerfil();
     testarConexao();
   } catch(e) { setStatus(false,'Erro na config'); showBanner(true); }
 }
@@ -470,9 +471,29 @@ function limparConfig() {
   localStorage.clear(); location.reload();
 };
 
+// ── PERFIL DO USUÁRIO (users/{uid}: ADMIN, OPERADOR, VISUALIZADOR) ──
+// Só ADMIN vê o botão "Apagar todos os dados". A mesma proteção existe nas
+// regras do Firestore: mesmo que o botão apareça, o banco recusa a exclusão
+// para quem não é ADMIN.
+window.rastrelPerfil = null;
+async function carregarPerfil() {
+  try {
+    const u = rastrelAuth && rastrelAuth.currentUser;
+    if (!u || !db) return;
+    const snap = await db.collection('users').doc(u.uid).get();
+    const d = snap.exists ? snap.data() : null;
+    window.rastrelPerfil = (d && d.active === true) ? d.role : null;
+  } catch (e) {
+    window.rastrelPerfil = null;
+  }
+  const btn = document.getElementById('btnApagarTudo');
+  if (btn) btn.style.display = window.rastrelPerfil === 'ADMIN' ? '' : 'none';
+}
+
 // ── LIMPEZA COMPLETA DO BANCO (apaga dados de teste/piloto) ──
 async function limparTodosDados() {
   if (!db) { flash('Firebase não conectado','err'); return; }
+  if (window.rastrelPerfil !== 'ADMIN') { flash('Somente ADMIN pode apagar todos os dados.','err'); return; }
 
   const confirmacao = prompt(
     'ATENÇÃO: isso vai apagar PERMANENTEMENTE todos os bags, lotes, movimentações e ' +
@@ -6903,7 +6924,7 @@ start();
     <p style="font-size:13px;color:var(--texto2);margin-bottom:10px;line-height:1.5">
       Apaga <strong>permanentemente</strong> todos os bags, lotes, movimentações e pedidos de carga salvos no banco de dados. Use isso só para limpar dados de teste antes de começar a operação real.
     </p>
-    <button class="btn btn-verm" onclick="limparTodosDados()" style="margin-bottom:10px">
+    <button id="btnApagarTudo" class="btn btn-verm" onclick="limparTodosDados()" style="margin-bottom:10px;display:none">
       <i class="ti ti-database-x"></i> Apagar todos os dados do banco
     </button>
 
