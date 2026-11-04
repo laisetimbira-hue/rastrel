@@ -468,7 +468,10 @@ function salvarOperador() {
 };
 function limparConfig() {
   if(!confirm('Limpar configuração?')) return;
-  localStorage.clear(); location.reload();
+  // Só as chaves do RASTREL: no app unificado o localStorage é dividido com Qualidade e TSI.
+  ['dispositivo', 'expedicao_ativa', 'fb_config', 'fonteIdx', 'notif_email1', 'notif_email2',
+   'operador', 'tema', FILA_KEY].forEach(k => localStorage.removeItem(k));
+  location.reload();
 };
 
 // ── PERFIL DO USUÁRIO (users/{uid}: ADMIN, OPERADOR, VISUALIZADOR) ──
